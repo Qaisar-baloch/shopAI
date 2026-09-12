@@ -21,6 +21,9 @@ def cached_products():
     return list_products()
 
 
+# ---------------------------------------------------------------
+# Page header
+# ---------------------------------------------------------------
 page_header(
     "Know what is moving",
     "INVENTORY OPERATIONS",
@@ -28,6 +31,23 @@ page_header(
 )
 
 
+# ---------------------------------------------------------------
+# Sidebar: demo controls
+# ---------------------------------------------------------------
+with st.sidebar:
+    st.divider()
+    st.subheader("🛠️ Demo Controls")
+    if st.button("🔄 Reseed Products", use_container_width=True):
+        from seed import seed
+        seed()
+        st.cache_data.clear()
+        st.success("Products reseeded.")
+        st.rerun()
+
+
+# ---------------------------------------------------------------
+# Tabs
+# ---------------------------------------------------------------
 tab_view, tab_add, tab_edit = st.tabs(["👁️ View Products", "➕ Add Product", "✏️ Edit / Delete"])
 
 
@@ -38,7 +58,7 @@ with tab_view:
     products = cached_products()
 
     if not products:
-        st.info("No products yet. Use the **➕ Add Product** tab to create your first one.")
+        st.info("No products yet. Click **🔄 Reseed Products** in the sidebar, or use the **➕ Add Product** tab.")
     else:
         col1, col2, col3 = st.columns([3, 2, 2])
         with col1:
@@ -128,14 +148,14 @@ with tab_add:
     with st.form("add_product_form", clear_on_submit=True):
         col_a, col_b = st.columns(2)
         with col_a:
-            name = st.text_input("Product name *", placeholder="e.g. Basmati Rice")
+            name = st.text_input("Product name *", placeholder="Basmati Rice")
             aliases = st.text_input(
                 "Aliases (comma-separated)",
                 placeholder="rice, chawal, basmati",
             )
             unit = st.selectbox(
                 "Unit *",
-                ["kg", "gram", "litre", "ml", "dozen", "piece", "packet"],
+                ["kg", "gram", "litre", "ml", "dozen", "piece", "packet", "bag", "bottle", "pack"],
                 index=0,
             )
         with col_b:
@@ -216,11 +236,11 @@ with tab_edit:
                 e_aliases = st.text_input("Aliases", value=selected["aliases"] or "")
                 e_unit = st.selectbox(
                     "Unit",
-                    ["kg", "gram", "litre", "ml", "dozen", "piece", "packet"],
+                    ["kg", "gram", "litre", "ml", "dozen", "piece", "packet", "bag", "bottle", "pack"],
                     index=(
-                        ["kg", "gram", "litre", "ml", "dozen", "piece", "packet"]
+                        ["kg", "gram", "litre", "ml", "dozen", "piece", "packet", "bag", "bottle", "pack"]
                         .index(selected["unit"])
-                        if selected["unit"] in ["kg", "gram", "litre", "ml", "dozen", "piece", "packet"]
+                        if selected["unit"] in ["kg", "gram", "litre", "ml", "dozen", "piece", "packet", "bag", "bottle", "pack"]
                         else 0
                     ),
                 )
