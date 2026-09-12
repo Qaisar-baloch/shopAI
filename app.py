@@ -3,7 +3,7 @@ import pandas as pd
 from db import (
     init_db, get_conn, recent_orders, low_stock_products,
     sales_by_product, sales_by_day, dashboard_stats,
-    find_product, get_product_by_id,
+    find_product, get_product_by_id, list_products,
 )
 from agents import classify_message, generate_reply
 from inventory import build_order_summary, execute_order
@@ -29,7 +29,7 @@ _ensure_seeded()
 
 
 # ---------------------------------------------------------------
-# Cached data helpers
+# Cached helpers
 # ---------------------------------------------------------------
 @st.cache_data(ttl=30)
 def cached_recent_orders(limit=8):
@@ -66,6 +66,21 @@ def cached_inventory_health():
     return inventory_health()
 
 
+@st.cache_data(ttl=30)
+def cached_full_inventory():
+    """All products with name, unit, price, stock — for inventory_query replies."""
+    products = list_products()
+    return [
+        {
+            "name": p["name"],
+            "unit": p["unit"],
+            "unit_price": float(p["unit_price"]),
+            "stock": float(p["current_stock"]),
+        }
+        for p in products
+    ]
+
+
 # ---------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------
@@ -73,7 +88,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 if "draft_items" not in st.session_state:
-    st.session_state.draft_items = []   # list of dicts: {product, product_id, quantity, unit, unit_price}
+    st.session_state.draft_items = []
 
 if "customer_name" not in st.session_state:
     st.session_state.customer_name = "Guest"
@@ -85,11 +100,9 @@ def _trim_messages():
 
 
 def _add_to_draft(products):
-    """Merge new parsed products into the draft order."""
     for p in products:
         if p["quantity"] <= 0:
             continue
-        # If same product already in draft, sum quantity
         existing = next(
             (d for d in st.session_state.draft_items if d["product_id"] == p["product_id"]),
             None,
@@ -107,7 +120,6 @@ def _add_to_draft(products):
 
 
 def _draft_summary():
-    """Return a build_order_summary-compatible dict from draft items."""
     items_with_ids = [
         {
             "product": d["product"],
@@ -137,7 +149,6 @@ with tab_customer:
         'e.g. "2kg atta, 1 dozen eggs aur 2 doodh"'
     )
 
-    # Sidebar
     with st.sidebar:
         st.header("📋 Recent Orders")
         orders = cached_recent_orders(8)
@@ -169,7 +180,7 @@ with tab_customer:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # ------- Order Draft panel -------
+    # Order Draft panel
     if st.session_state.draft_items:
         st.divider()
         st.subheader("🧾 Order Draft (from live inventory — not final yet)")
@@ -237,7 +248,7 @@ with tab_customer:
                 _trim_messages()
                 st.rerun()
 
-    # ------- Chat input -------
+    # Chat input
     user_msg = st.chat_input("Type your order...")
     if user_msg:
         st.session_state.messages.append({"role": "user", "content": user_msg})
@@ -251,12 +262,24 @@ with tab_customer:
                 language = parsed.get("language", "en")
                 products = parsed.get("products", [])
 
-                # ------ Greeting ------
+                # ------- Greeting -------
                 if intent == "greeting":
                     data = {"note": "customer greeted"}
                     reply = generate_reply(user_msg, intent, data, language)
 
-                # ------ Product query (availability / price / stock) ------
+                # ------- Inventory query (full list) -------
+                elif intent == "inventory_query":
+                    all_items = cached_full_inventory()
+                    in_stock = [it for it in all_items if it["stock"] > 0]
+                    data = {
+                        "query_type": "full_inventory",
+                        "all_items": in_stock,
+                        "total_products": len(all_items),
+                        "in_stock_count": len(in_stock),
+                    }
+                    reply = generate_reply(user_msg, intent, data, language)
+
+                # ------- Product availability -------
                 elif intent == "product_query":
                     if products:
                         p = products[0]
@@ -265,16 +288,41 @@ with tab_customer:
                             "product": {
                                 "name": real["name"],
                                 "unit": real["unit"],
-                                "unit_price": real["unit_price"],
-                                "stock": real["current_stock"],
+                                "unit_price": float(real["unit_price"]),
+                                "stock": float(real["current_stock"]),
                             }
                         }
                         reply = generate_reply(user_msg, intent, data, language)
                     else:
-                        reply = generate_reply(user_msg, intent,
-                                               {"note": "product not in catalog"}, language)
+                        all_items = cached_full_inventory()
+                        in_stock = [it for it in all_items if it["stock"] > 0]
+                        reply = generate_reply(
+                            user_msg,
+                            "inventory_query",
+                            {"all_items": in_stock, "note": "could not match specific product"},
+                            language,
+                        )
 
-                # ------ Order intent ------
+                # ------- Price query -------
+                elif intent == "price_query":
+                    if products:
+                        p = products[0]
+                        real = get_product_by_id(p["product_id"])
+                        data = {
+                            "product": {
+                                "name": real["name"],
+                                "unit": real["unit"],
+                                "unit_price": float(real["unit_price"]),
+                                "stock": float(real["current_stock"]),
+                            }
+                        }
+                        reply = generate_reply(user_msg, intent, data, language)
+                    else:
+                        all_items = cached_full_inventory()
+                        data = {"all_items": all_items}
+                        reply = generate_reply(user_msg, "inventory_query", data, language)
+
+                # ------- Order intent -------
                 elif intent == "order_intent":
                     if products:
                         _add_to_draft(products)
@@ -294,18 +342,31 @@ with tab_customer:
                         }
                         reply = generate_reply(user_msg, intent, data, language)
                     else:
-                        reply = "Koi product samajh nahi aaya — dobara likh dein?"
+                        all_items = cached_full_inventory()
+                        in_stock = [it for it in all_items if it["stock"] > 0]
+                        reply = generate_reply(
+                            user_msg,
+                            "inventory_query",
+                            {"all_items": in_stock, "note": "could not understand the order"},
+                            language,
+                        )
 
-                # ------ Confirm / Cancel ------
+                # ------- Confirm / Cancel -------
                 elif intent == "confirm":
                     reply = "Confirm karne ke liye neeche 'Confirm Order' button dabaiye. 🙂"
                 elif intent == "cancel":
                     st.session_state.draft_items = []
                     reply = generate_reply(user_msg, intent, {"note": "order cancelled"}, language)
 
-                # ------ Fallback ------
+                # ------- Fallback — try to be useful -------
                 else:
-                    reply = generate_reply(user_msg, intent, {"note": "could not classify"}, language)
+                    all_items = cached_full_inventory()
+                    in_stock = [it for it in all_items if it["stock"] > 0]
+                    data = {
+                        "note": "customer asked something we couldn't classify",
+                        "all_items": in_stock,
+                    }
+                    reply = generate_reply(user_msg, "inventory_query", data, language)
 
                 st.markdown(reply)
                 st.session_state.messages.append({"role": "assistant", "content": reply})
