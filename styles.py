@@ -1,43 +1,58 @@
 """
-DukaanAI — Custom theme module.
+DukaanAI — Custom theme module (Modern SaaS).
 
 Usage in any page:
-    from styles import inject_theme, page_header, kpi_row
+    from styles import inject_theme, page_header, sidebar_brand, footer
     inject_theme()
-    page_header("📦 Inventory Management", "INVENTORY OPERATIONS",
-                "Add, edit, and manage your product catalog.")
+    sidebar_brand()
+    page_header("Title", "TAG", "Subtitle")
 """
 
 import streamlit as st
 
 
-# ===============================================================
-# Palette — Modern SaaS (deep navy · light main · electric blue)
-# ===============================================================
-NAVY = "#0F1729"            # sidebar
-NAVY_2 = "#1A2540"          # sidebar hover
-BLUE = "#3B82F6"            # primary accent
-BLUE_DK = "#2563EB"         # primary hover
-GREEN = "#10B981"           # success / confirmed
-AMBER = "#F59E0B"           # warning / pending / low stock
-RED = "#EF4444"             # danger / rejected / out of stock
-GRAY_BG = "#F8FAFC"         # main background
-GRAY_CARD = "#FFFFFF"       # card background
-GRAY_BORDER = "#E2E8F0"     # borders
-TEXT_DK = "#0F172A"         # primary text
-TEXT_MID = "#475569"        # secondary text
-TEXT_LT = "#94A3B8"         # tertiary text / sidebar text
+NAVY = "#0F1729"
+NAVY_2 = "#1A2540"
+BLUE = "#3B82F6"
+BLUE_DK = "#2563EB"
+GREEN = "#10B981"
+AMBER = "#F59E0B"
+RED = "#EF4444"
+GRAY_BG = "#F8FAFC"
+GRAY_CARD = "#FFFFFF"
+GRAY_BORDER = "#E2E8F0"
+TEXT_DK = "#0F172A"
+TEXT_MID = "#475569"
+TEXT_LT = "#94A3B8"
 
 
-# ===============================================================
-# Global CSS injection — call once per page
-# ===============================================================
 def inject_theme():
     st.markdown(f"""
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
 
-        /* ---------- Base ---------- */
+        /* Hide the default entry-page nav item (shows as "app") */
+        [data-testid="stSidebarNav"] ul li:first-child {{
+            display: none;
+        }}
+
+        /* Workspace label above nav */
+        [data-testid="stSidebarNav"]::before {{
+            content: "WORKSPACE";
+            display: block;
+            font-size: 0.65rem;
+            font-weight: 600;
+            letter-spacing: 0.14em;
+            color: {TEXT_LT};
+            padding: 0 12px 8px 12px;
+            margin-top: 8px;
+        }}
+
+        /* Hide the Deploy button (keep Manage app) */
+        [data-testid="stAppDeployButton"] {{
+            display: none !important;
+        }}
+
         html, body, [class*="css"] {{
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
             color: {TEXT_DK};
@@ -50,7 +65,6 @@ def inject_theme():
         h1 {{ font-weight: 700 !important; }}
         h2, h3 {{ font-weight: 600 !important; }}
 
-        /* ---------- Main background ---------- */
         .stApp {{
             background-color: {GRAY_BG};
         }}
@@ -60,7 +74,6 @@ def inject_theme():
             max-width: 1300px;
         }}
 
-        /* ---------- Sidebar ---------- */
         [data-testid="stSidebar"] {{
             background-color: {NAVY} !important;
         }}
@@ -74,7 +87,6 @@ def inject_theme():
             color: #FFFFFF !important;
             font-family: 'Space Grotesk', sans-serif !important;
         }}
-        /* Sidebar nav links */
         [data-testid="stSidebar"] a {{
             border-radius: 8px !important;
             padding: 8px 12px !important;
@@ -87,7 +99,7 @@ def inject_theme():
             background-color: {BLUE}33 !important;
             border-left: 3px solid {BLUE} !important;
         }}
-        /* Sidebar brand block */
+
         .dukaanai-brand {{
             padding: 1rem 0.5rem 1.25rem 0.5rem;
             border-bottom: 1px solid #FFFFFF22;
@@ -110,7 +122,6 @@ def inject_theme():
             font-weight: 500;
         }}
 
-        /* ---------- Buttons ---------- */
         .stButton > button {{
             border-radius: 8px !important;
             font-weight: 500 !important;
@@ -133,7 +144,6 @@ def inject_theme():
             border-color: {BLUE_DK} !important;
         }}
 
-        /* ---------- Metric cards ---------- */
         [data-testid="stMetric"] {{
             background: {GRAY_CARD};
             border: 1px solid {GRAY_BORDER};
@@ -154,7 +164,6 @@ def inject_theme():
             font-weight: 700 !important;
         }}
 
-        /* ---------- Chat bubbles ---------- */
         [data-testid="stChatMessage"] {{
             border-radius: 12px;
             padding: 0.75rem 1rem;
@@ -168,12 +177,10 @@ def inject_theme():
             background: {GRAY_CARD};
         }}
 
-        /* ---------- Chat input ---------- */
         [data-testid="stChatInput"] textarea {{
             border-radius: 10px !important;
         }}
 
-        /* ---------- Expanders ---------- */
         [data-testid="stExpander"] {{
             border: 1px solid {GRAY_BORDER} !important;
             border-radius: 10px !important;
@@ -183,13 +190,11 @@ def inject_theme():
             font-weight: 500;
         }}
 
-        /* ---------- Dataframes ---------- */
         [data-testid="stDataFrame"] {{
             border-radius: 10px;
             border: 1px solid {GRAY_BORDER};
         }}
 
-        /* ---------- Tabs ---------- */
         .stTabs [data-baseweb="tab-list"] {{
             gap: 4px;
             border-bottom: 1px solid {GRAY_BORDER};
@@ -205,13 +210,11 @@ def inject_theme():
             border-bottom: 2px solid {BLUE} !important;
         }}
 
-        /* ---------- Alerts / info / success / warning ---------- */
         [data-testid="stAlert"] {{
             border-radius: 10px;
             border: 1px solid {GRAY_BORDER};
         }}
 
-        /* ---------- Page header block ---------- */
         .page-header {{
             margin-bottom: 1.5rem;
         }}
@@ -245,7 +248,6 @@ def inject_theme():
             margin: 0;
         }}
 
-        /* ---------- Status badges ---------- */
         .badge {{
             display: inline-block;
             padding: 2px 10px;
@@ -262,7 +264,6 @@ def inject_theme():
         .badge-low       {{ background: {AMBER}22; color: #B45309; }}
         .badge-out       {{ background: {RED}22;   color: #B91C1C; }}
 
-        /* ---------- Footer ---------- */
         .dukaanai-footer {{
             margin-top: 3rem;
             padding-top: 1.5rem;
@@ -275,11 +276,7 @@ def inject_theme():
     """, unsafe_allow_html=True)
 
 
-# ===============================================================
-# Reusable UI helpers
-# ===============================================================
 def page_header(title: str, tag: str = "", subtitle: str = ""):
-    """Renders the standard DukaanAI page header (pill + title + subtitle)."""
     st.markdown(f"""
     <div class="page-header">
         {f'<div class="pill">{tag}</div>' if tag else ''}
@@ -290,7 +287,6 @@ def page_header(title: str, tag: str = "", subtitle: str = ""):
 
 
 def sidebar_brand():
-    """Renders the branded block at the top of the sidebar."""
     st.sidebar.markdown("""
     <div class="dukaanai-brand">
         <div class="title">🛒 DukaanAI</div>
@@ -300,10 +296,6 @@ def sidebar_brand():
 
 
 def badge(text: str, kind: str = "ok"):
-    """
-    Returns an HTML span for a status badge.
-    kind: 'pending' | 'confirmed' | 'rejected' | 'ok' | 'low' | 'out'
-    """
     return f'<span class="badge badge-{kind}">{text}</span>'
 
 
