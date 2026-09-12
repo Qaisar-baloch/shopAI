@@ -45,35 +45,49 @@ def get_client():
     return Groq(api_key=api_key)
 
 
-# ---------------------------------------------------------------
-# Product catalog for the LLM
-# ---------------------------------------------------------------
+# ---- CHANGED: include unit in the catalog so the LLM knows how each product is sold ----
 def get_product_catalog():
     products = list_products()
     return [
-        {"name": p["name"], "aliases": p["aliases"], "unit": p["unit"]}
+        {
+            "name": p["name"],
+            "aliases": p["aliases"],
+            "unit": p["unit"],           # kg / gram / litre / dozen / piece
+            "price_per_unit": p["unit_price"],
+            "stock_available": p["current_stock"],
+        }
         for p in products
     ]
 
 
-# ---------------------------------------------------------------
-# Intent classifier (expanded)
-# ---------------------------------------------------------------
+# ---- CHANGED: stricter classifier prompt with unit rules ----
 CLASSIFIER_PROMPT = """You are the intent classifier for DukaanAI, an AI shop assistant.
 
 Classify the customer's message into EXACTLY ONE of these intents:
-
 - "greeting"         → hi, hello, salam, assalam, hey, aoaa
 - "product_query"    → asks about availability/price/stock of a SPECIFIC product
-- "inventory_query"  → asks what products exist in the shop, wants a LIST, "kya kya hai", "what do you have", "show inventory", "stock me kia hai", "all items", "menu"
-- "price_query"      → asks about price ONLY of a specific product ("rate kya hai", "kitne ka hai")
+- "inventory_query"  → asks what products exist in the shop, wants a LIST
+- "price_query"      → asks price ONLY of a specific product
 - "order_intent"     → wants to order one or more products WITH quantities
 - "confirm"          → yes, haan, ok, confirm, theek hai
 - "cancel"           → no, nahi, cancel, chhoro
 - "other"            → anything else
 
+CRITICAL UNIT RULES:
+1. Each product in the CATALOG is sold ONLY in the unit listed ("unit" field).
+2. If the customer uses a DIFFERENT unit than the product's catalog unit, DO NOT auto-convert.
+   Instead, mark the item in "unit_mismatch" and explain.
+3. Examples of mismatch:
+   - Catalog says "gram", customer says "kg" → MISMATCH (do not convert)
+   - Catalog says "kg", customer says "gram" → MISMATCH
+   - Catalog says "litre", customer says "ml" → MISMATCH
+   - Catalog says "piece", customer says "dozen" → MISMATCH
+4. If the customer uses the SAME unit as catalog, extract normally.
+5. If no unit specified by customer, assume the catalog's unit.
+
 Also extract:
-- "products": list of {product, quantity, unit} from catalog (for product_query, price_query, order_intent). For inventory_query, leave empty.
+- "products": list of {product, quantity, unit} from catalog (for product_query, price_query, order_intent)
+- "unit_mismatch": list of {product, customer_said_unit, catalog_unit} for cross-unit requests
 - "language": "en" | "ur_roman" | "ur"
 
 CATALOG:
@@ -81,28 +95,26 @@ CATALOG:
 
 OUTPUT (strict JSON, no markdown):
 {{
-  "intent": "product_query",
+  "intent": "order_intent",
   "language": "ur_roman",
-  "products": [{{"product":"Milk","quantity":0,"unit":"litre"}}]
+  "products": [{{"product":"Milk","quantity":5,"unit":"litre"}}],
+  "unit_mismatch": []
 }}
 
 EXAMPLES:
-"hi"                              → {{"intent":"greeting","language":"en","products":[]}}
-"salam"                           → {{"intent":"greeting","language":"ur_roman","products":[]}}
-"milk available hai?"             → {{"intent":"product_query","language":"ur_roman","products":[{{"product":"Milk","quantity":0,"unit":"litre"}}]}}
-"atta ka rate?"                   → {{"intent":"price_query","language":"ur_roman","products":[{{"product":"Atta","quantity":0,"unit":"kg"}}]}}
-"stock me kia kia hai?"           → {{"intent":"inventory_query","language":"ur_roman","products":[]}}
-"what do you have?"               → {{"intent":"inventory_query","language":"en","products":[]}}
-"show me everything"              → {{"intent":"inventory_query","language":"en","products":[]}}
-"kya kya items hain"              → {{"intent":"inventory_query","language":"ur_roman","products":[]}}
-"2kg atta, 1 dozen eggs"          → {{"intent":"order_intent","language":"ur_roman","products":[{{"product":"Atta","quantity":2,"unit":"kg"}},{{"product":"Eggs","quantity":1,"unit":"dozen"}}]}}
-"haan"                            → {{"intent":"confirm","language":"ur_roman","products":[]}}
-"no"                              → {{"intent":"cancel","language":"en","products":[]}}
+"hi"                                 → {{"intent":"greeting","language":"en","products":[],"unit_mismatch":[]}}
+"milk available hai?"                → {{"intent":"product_query","language":"ur_roman","products":[{{"product":"Milk","quantity":0,"unit":"litre"}}],"unit_mismatch":[]}}
+"2kg atta"                           → {{"intent":"order_intent","language":"ur_roman","products":[{{"product":"Atta","quantity":2,"unit":"kg"}}],"unit_mismatch":[]}}
+"I need two kg tea"                  → {{"intent":"order_intent","language":"en","products":[],"unit_mismatch":[{{"product":"Tea","customer_said_unit":"kg","catalog_unit":"gram"}}]}}
+"5 litre milk"                       → {{"intent":"order_intent","language":"en","products":[{{"product":"Milk","quantity":5,"unit":"litre"}}],"unit_mismatch":[]}}
+"500 gram tea"                       → {{"intent":"order_intent","language":"en","products":[{{"product":"Tea","quantity":500,"unit":"gram"}}],"unit_mismatch":[]}}
+"1 dozen eggs"                       → {{"intent":"order_intent","language":"en","products":[{{"product":"Eggs","quantity":1,"unit":"dozen"}}],"unit_mismatch":[]}}
+"stock me kia kia hai?"              → {{"intent":"inventory_query","language":"ur_roman","products":[],"unit_mismatch":[]}}
 """
 
 
 def classify_message(message: str) -> dict:
-    """Returns {intent, language, products, unknown}."""
+    """Returns {intent, language, products, unit_mismatch, unknown}."""
     client = get_client()
     catalog = get_product_catalog()
     prompt = CLASSIFIER_PROMPT.replace("{catalog}", json.dumps(catalog, indent=2))
@@ -125,12 +137,15 @@ def classify_message(message: str) -> dict:
         for item in parsed.get("products", []):
             real = find_product(item.get("product", ""))
             if real:
+                qty = float(item.get("quantity", 0))
                 validated.append({
                     "product": real["name"],
                     "product_id": real["id"],
-                    "quantity": float(item.get("quantity", 0)),
+                    "quantity": qty,
                     "unit": real["unit"],
                     "unit_price": real["unit_price"],
+                    "stock_available": float(real["current_stock"]),
+                    "exceeds_stock": qty > float(real["current_stock"]),
                 })
             else:
                 unknown.append(item.get("product"))
@@ -139,6 +154,7 @@ def classify_message(message: str) -> dict:
             "intent": parsed.get("intent", "other"),
             "language": parsed.get("language", "en"),
             "products": validated,
+            "unit_mismatch": parsed.get("unit_mismatch", []),
             "unknown": unknown,
         }
     except Exception as e:
@@ -146,33 +162,31 @@ def classify_message(message: str) -> dict:
             "intent": "other",
             "language": "en",
             "products": [],
+            "unit_mismatch": [],
             "unknown": [],
             "error": str(e),
         }
 
 
-# ---------------------------------------------------------------
-# Natural-language response generator
-# ---------------------------------------------------------------
+# ---- CHANGED: responder prompt tightened to never contradict the data ----
 RESPONDER_PROMPT = """You are DukaanAI — a friendly shopkeeper's assistant at a small neighbourhood store.
 
 LANGUAGE RULES:
-1. Reply in the SAME language as the customer. English → English. Roman Urdu → Roman Urdu. Urdu script → Urdu script.
-2. Never mix languages unless the customer mixed them.
+1. Reply in the SAME language as the customer (English → English, Roman Urdu → Roman Urdu, Urdu → Urdu).
 
 STYLE RULES:
-3. Be warm, brief, and human — like a real shopkeeper talking to a regular customer.
-4. Keep replies to 1–4 short sentences. Use short paragraphs or bullet points when listing multiple items.
-5. Use ONLY the facts provided below. NEVER invent prices, stock, or product names.
-6. NEVER say "I don't have information" if there is data below — always give what you have.
-7. NEVER mention that you are an AI or LLM.
-8. If asked a broad question ("what else do you have"), list ALL items provided in the data — one per line, with price.
-9. Do NOT use emojis unless the customer did.
+2. Be warm, brief, human. 1–4 short sentences.
+3. Use ONLY the facts provided in the data below. NEVER invent prices, stock, or product names.
+4. NEVER say "I don't have information" if data is provided — always use it.
+5. NEVER mention AI / LLM.
+6. If the customer requested more than the available stock, clearly say the available amount and ask what they'd like.
+7. If a unit mismatch is reported, politely explain how the item is sold (in the catalog unit) and ask the customer to rephrase in that unit.
+8. No emojis unless the customer used one.
 
 FACTUAL DATA (authoritative — quote exactly):
 {data}
 
-Output plain text only. No JSON. No markdown code fences.
+Output plain text only. No JSON, no markdown fences.
 """
 
 
@@ -190,16 +204,13 @@ def generate_reply(customer_message: str, intent: str, data: dict, language: str
         resp = client.chat.completions.create(
             model="openai/gpt-oss-120b",
             messages=[
-                {
-                    "role": "system",
-                    "content": prompt,
-                },
+                {"role": "system", "content": prompt},
                 {
                     "role": "user",
                     "content": f"{lang_hint}\n\nCustomer said: {customer_message}\nDetected intent: {intent}",
                 },
             ],
-            temperature=0.6,
+            temperature=0.5,
             max_tokens=500,
         )
         return resp.choices[0].message.content.strip()
@@ -208,19 +219,41 @@ def generate_reply(customer_message: str, intent: str, data: dict, language: str
 
 
 def _fallback_reply(intent, data, language):
-    """Deterministic fallback if LLM call fails."""
     is_ur = language in ("ur_roman", "ur")
 
     if intent == "greeting":
         return "Assalam-o-Alaikum! Kya chahiye?" if is_ur else "Hi! How can I help you?"
 
+    if intent == "unit_mismatch":
+        m = data.get("mismatch", {})
+        return (
+            f"Maaf kijiye, {m.get('product')} {m.get('catalog_unit')} mein bikta hai — "
+            f"aap {m.get('catalog_unit')} mein bata dein."
+            if is_ur else
+            f"Sorry, {m.get('product')} is sold by {m.get('catalog_unit')}. "
+            f"Could you tell me the quantity in {m.get('catalog_unit')}?"
+        )
+
     if intent == "inventory_query":
         items = data.get("all_items", [])
         if not items:
             return "Abhi stock khali hai." if is_ur else "Currently the shop is empty."
-        lines = [f"- {it['name']}: Rs.{it['unit_price']}/{it['unit']} ({it['stock']} available)" for it in items]
+        lines = [
+            f"- {it['name']}: Rs.{it['unit_price']}/{it['unit']} ({it['stock']} available)"
+            for it in items
+        ]
         header = "Yeh sab items available hain:" if is_ur else "These are all available items:"
         return header + "\n" + "\n".join(lines)
+
+    if intent == "stock_exceeded":
+        m = data.get("mismatch", {})
+        return (
+            f"Sirf {m.get('stock')} {m.get('unit')} {m.get('product')} bacha hai — "
+            f"aap ne {m.get('requested')} {m.get('unit')} maanga. Kitna chahiye?"
+            if is_ur else
+            f"Only {m.get('stock')} {m.get('unit')} of {m.get('product')} available — "
+            f"you asked for {m.get('requested')} {m.get('unit')}. How much would you like?"
+        )
 
     if intent == "product_query" and data.get("product"):
         p = data["product"]
@@ -228,8 +261,8 @@ def _fallback_reply(intent, data, language):
             f"Haan, {p['name']} available hai — Rs.{p['unit_price']} per {p['unit']}, "
             f"{p['stock']} {p['unit']} bacha hai."
             if is_ur else
-            f"Yes, we have {p['name']} at Rs.{p['unit_price']} per {p['unit']} — "
-            f"{p['stock']} {p['unit']} available."
+            f"Yes, {p['name']} is available at Rs.{p['unit_price']} per {p['unit']} — "
+            f"{p['stock']} {p['unit']} in stock."
         )
 
     if intent == "price_query" and data.get("product"):
@@ -242,11 +275,12 @@ def _fallback_reply(intent, data, language):
 
     if intent == "order_intent" and data.get("added_items"):
         total = data.get("draft_total", 0)
+        first = data["added_items"][0]
         return (
-            f"Theek hai, {data['added_items'][0]['qty']} {data['added_items'][0]['unit']} "
-            f"{data['added_items'][0]['name']} add kar diya. Total ab Rs.{total} hai."
+            f"Theek hai, {first['qty']} {first['unit']} {first['name']} add kar diya. "
+            f"Total ab Rs.{total} hai."
             if is_ur else
-            f"Added to your order. Running total: Rs.{total}."
+            f"Added {first['qty']} {first['unit']} of {first['name']}. Running total: Rs.{total}."
         )
 
     if intent == "confirm":
