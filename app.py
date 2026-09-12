@@ -1,13 +1,8 @@
-﻿import streamlit as st
+import streamlit as st
 import pandas as pd
 from db import (
-    init_db,
-    get_conn,
-    recent_orders,
-    low_stock_products,
-    sales_by_product,
-    sales_by_day,
-    dashboard_stats,
+    init_db, get_conn, recent_orders, low_stock_products,
+    sales_by_product, sales_by_day, dashboard_stats,
 )
 from agents import parse_order
 from inventory import build_order_summary, execute_order
@@ -19,8 +14,6 @@ from restock_agent import recommend_restock, inventory_health
 st.set_page_config(page_title="DukaanAI", page_icon="🛒", layout="wide")
 init_db()
 
-
-# --- Auto-seed on first deploy (Streamlit Cloud starts with empty DB) ---
 def _ensure_seeded():
     conn = get_conn()
     count = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
@@ -29,9 +22,38 @@ def _ensure_seeded():
         from seed import seed
         seed()
 
-
 _ensure_seeded()
 
+# ---------------------------------------------------------------
+# Cached data helpers — prevents memory spikes on every rerun
+# ---------------------------------------------------------------
+@st.cache_data(ttl=30)
+def cached_recent_orders(limit=8):
+    return recent_orders(limit)
+
+@st.cache_data(ttl=30)
+def cached_low_stock():
+    return low_stock_products()
+
+@st.cache_data(ttl=30)
+def cached_sales_by_day(limit=7):
+    return sales_by_day(limit)
+
+@st.cache_data(ttl=30)
+def cached_sales_by_product(limit=8):
+    return sales_by_product(limit)
+
+@st.cache_data(ttl=30)
+def cached_dashboard_stats():
+    return dashboard_stats()
+
+@st.cache_data(ttl=60)
+def cached_restock_recs():
+    return recommend_restock(lookback_days=14)
+
+@st.cache_data(ttl=60)
+def cached_inventory_health():
+    return inventory_health()
 
 # ---------------------------------------------------------------
 # Session state
@@ -48,12 +70,15 @@ if "messages" not in st.session_state:
 if "pending_order" not in st.session_state:
     st.session_state.pending_order = None
 
+def _trim_messages():
+    """Keep session state small — prevents memory growth."""
+    if len(st.session_state.messages) > 20:
+        st.session_state.messages = st.session_state.messages[-20:]
 
 # ---------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------
 tab_customer, tab_shop = st.tabs(["💬 Customer Chat", "📊 Shopkeeper Dashboard"])
-
 
 # ===============================================================
 # TAB 1 — Customer Chat
@@ -68,10 +93,9 @@ with tab_customer:
         key="customer_name"
     )
 
-    # Sidebar (only on chat tab)
     with st.sidebar:
         st.header("📋 Recent Orders")
-        orders = recent_orders(8)
+        orders = cached_recent_orders(8)
         if not orders:
             st.caption("No orders yet. Try placing one!")
         else:
@@ -85,7 +109,7 @@ with tab_customer:
                 st.divider()
 
         st.header("⚠️ Low Stock")
-        lows = low_stock_products()
+        lows = cached_low_stock()
         if not lows:
             st.caption("All good 👍")
         else:
@@ -95,12 +119,10 @@ with tab_customer:
                     f"*(min {p['min_stock']})*"
                 )
 
-    # Render chat history
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Pending order → confirm/cancel
     if st.session_state.pending_order:
         order = st.session_state.pending_order
         with st.chat_message("assistant"):
@@ -148,6 +170,8 @@ with tab_customer:
                         st.session_state.messages.append({
                             "role": "assistant", "content": msg
                         })
+                    st.cache_data.clear()  # refresh dashboard data
+                    _trim_messages()
                     st.session_state.pending_order = None
                     st.rerun()
 
@@ -157,10 +181,10 @@ with tab_customer:
                         "role": "assistant",
                         "content": "Order cancelled. Kuch aur chahiye? 🙂",
                     })
+                    _trim_messages()
                     st.session_state.pending_order = None
                     st.rerun()
 
-    # Chat input
     user_msg = st.chat_input("Type your order...")
     if user_msg:
         st.session_state.messages.append({"role": "user", "content": user_msg})
@@ -189,7 +213,7 @@ with tab_customer:
                 if parsed["unknown"]:
                     st.info(f"Note: skipped unknown products → {parsed['unknown']}")
                 st.rerun()
-
+        _trim_messages()
 
 # ===============================================================
 # TAB 2 — Shopkeeper Dashboard
@@ -197,13 +221,13 @@ with tab_customer:
 with tab_shop:
     st.title("📊 Shopkeeper Dashboard")
 
-    # --- Sidebar: Demo controls ---
     with st.sidebar:
         st.divider()
         st.subheader("🛠️ Demo Controls")
         if st.button("🔄 Reset Demo Data", use_container_width=True):
             from seed import seed
             seed()
+            st.cache_data.clear()
             st.session_state.messages = [{
                 "role": "assistant",
                 "content": "🔄 Demo reset. Dukaan fresh hai! Apna order likhein."
@@ -212,9 +236,8 @@ with tab_shop:
             st.success("Demo data reset.")
             st.rerun()
 
-    # --- KPI row ---
-    health = inventory_health()
-    stats = dashboard_stats()
+    health = cached_inventory_health()
+    stats = cached_dashboard_stats()
 
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Total Orders", stats["total_orders"])
@@ -224,11 +247,10 @@ with tab_shop:
 
     st.divider()
 
-    # --- Restock Recommendations ---
     st.subheader("🧠 Restock Recommendation Agent")
     st.caption("Based on last 14 days of sales + current stock vs. minimum stock.")
 
-    recs = recommend_restock(lookback_days=14)
+    recs = cached_restock_recs()
     if not recs:
         st.success("✅ All products are above minimum stock. No restock needed.")
     else:
@@ -243,18 +265,15 @@ with tab_shop:
             "Avg/Day", "Reorder Qty", "Unit", "Est. Cost (Rs.)"
         ]
         st.dataframe(df, use_container_width=True, hide_index=True)
-
         total_cost = sum(r["estimated_cost"] for r in recs)
         st.info(f"**Estimated total restock cost:** Rs.{total_cost:,.0f}")
 
     st.divider()
 
-    # --- Sales analytics ---
     col_a, col_b = st.columns(2)
-
     with col_a:
         st.subheader("📈 Sales by Day")
-        daily = sales_by_day(limit=14)
+        daily = cached_sales_by_day(7)  # reduced from 14 → less memory
         if daily:
             df_day = pd.DataFrame(daily).set_index("day")
             st.bar_chart(df_day["revenue"])
@@ -263,7 +282,7 @@ with tab_shop:
 
     with col_b:
         st.subheader("🏆 Best-Selling Products")
-        best = sales_by_product(limit=8)
+        best = cached_sales_by_product(8)
         if best:
             df_best = pd.DataFrame(best).set_index("product_name")
             st.bar_chart(df_best["total_qty"])
@@ -272,9 +291,8 @@ with tab_shop:
 
     st.divider()
 
-    # --- Recent orders table ---
     st.subheader("🧾 Recent Orders")
-    recent = recent_orders(20)
+    recent = cached_recent_orders(20)
     if recent:
         df_recent = pd.DataFrame(recent)[[
             "order_code", "customer", "total", "status", "created_at"
