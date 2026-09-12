@@ -11,6 +11,7 @@ def get_conn():
 
 
 def init_db():
+    """Create tables if missing. Auto-seed products if table is empty."""
     conn = get_conn()
     c = conn.cursor()
 
@@ -52,6 +53,15 @@ def init_db():
     """)
 
     conn.commit()
+
+    # ---- Auto-seed if products table is empty ----
+    count = c.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+    if count == 0:
+        conn.close()
+        from seed import seed
+        seed()
+        return
+
     conn.close()
 
 
@@ -135,7 +145,6 @@ def delete_product(pid):
 # Order helpers
 # ---------------------------------------------------------------
 def create_order(customer, items):
-    """Insert order header + line items. Status defaults to PENDING."""
     total = sum(i["quantity"] * i["unit_price"] for i in items)
     conn = get_conn()
     c = conn.cursor()
@@ -204,7 +213,6 @@ def get_order_with_items(order_id):
 
 
 def deduct_stock(product_id, quantity):
-    """Atomically reduce stock. Raises ValueError if insufficient."""
     conn = get_conn()
     c = conn.cursor()
     row = c.execute(
