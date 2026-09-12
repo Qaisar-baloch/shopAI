@@ -9,8 +9,11 @@ from db import (
     dashboard_stats,
 )
 from restock_agent import recommend_restock, inventory_health
+from styles import inject_theme, page_header, sidebar_brand, footer
 
 st.set_page_config(page_title="Dashboard · DukaanAI", page_icon="📊", layout="wide")
+inject_theme()
+sidebar_brand()
 init_db()
 
 
@@ -49,8 +52,17 @@ def cached_inventory_health():
     return inventory_health()
 
 
-st.title("📊 Shopkeeper Dashboard")
+# ---------------------------------------------------------------
+# Page header
+# ---------------------------------------------------------------
+page_header(
+    "Your shop, in one clear view",
+    "SHOP OVERVIEW",
+    "See what needs attention, what is selling, and where your next decision is hiding.",
+)
 
+
+# ---- Sidebar ----
 with st.sidebar:
     st.divider()
     st.subheader("🛠️ Demo Controls")
@@ -62,6 +74,7 @@ with st.sidebar:
         st.session_state.draft_items = []
         st.success("Demo data reset.")
         st.rerun()
+
 
 health = cached_inventory_health()
 stats = cached_dashboard_stats()
@@ -80,6 +93,7 @@ if stats.get("pending_count", 0) > 0:
 
 st.divider()
 
+# ---- Restock ----
 st.subheader("🧠 Restock Recommendation Agent")
 st.caption("Based on last 14 days of sales + current stock vs. minimum stock.")
 
@@ -118,6 +132,7 @@ else:
 
 st.divider()
 
+# ---- Charts ----
 col_a, col_b = st.columns(2)
 with col_a:
     st.subheader("📈 Sales by Day")
@@ -139,6 +154,7 @@ with col_b:
 
 st.divider()
 
+# ---- Recent orders ----
 st.subheader("🧾 Recent Orders")
 recent = cached_recent_orders(20)
 if recent:
@@ -154,3 +170,5 @@ if recent:
     st.dataframe(df_recent, use_container_width=True, hide_index=True)
 else:
     st.caption("No orders yet.")
+
+footer()
