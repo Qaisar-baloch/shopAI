@@ -1,5 +1,6 @@
 import streamlit as st
 from db import init_db, get_conn
+from styles import inject_theme, page_header, sidebar_brand, footer
 
 st.set_page_config(
     page_title="DukaanAI",
@@ -7,6 +8,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+inject_theme()
+sidebar_brand()
 
 init_db()
 
@@ -22,17 +26,12 @@ def _ensure_seeded():
 
 _ensure_seeded()
 
-# ---- Sidebar branding ----
-st.sidebar.title("🛒 DukaanAI")
-st.sidebar.caption("Autonomous AI Business Agent")
-st.sidebar.divider()
-
 # ---- Landing content ----
-st.title("🛒 DukaanAI")
-st.caption("Autonomous AI Business Agent for Micro-Businesses")
-st.markdown("### *From Customer Message to Business Action.*")
-
-st.divider()
+page_header(
+    "Your shop, in one clear view",
+    "RETAIL INTELLIGENCE",
+    "Autonomous AI Business Agent for Micro-Businesses. From customer message to business action.",
+)
 
 st.markdown("""
 ### 👈 Pick a page from the sidebar
@@ -51,5 +50,4 @@ st.info(
     "then open **🧾 Orders** as the shopkeeper to accept it."
 )
 
-st.divider()
-st.caption("Built with Streamlit · Groq · SQLite — MVP for hackathon demonstration")
+footer()
