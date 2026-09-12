@@ -9,8 +9,11 @@ from db import (
 )
 from agents import classify_message, generate_reply
 from inventory import build_order_summary, execute_order
+from styles import inject_theme, page_header, sidebar_brand, footer
 
 st.set_page_config(page_title="Customer Chat · DukaanAI", page_icon="💬", layout="wide")
+inject_theme()
+sidebar_brand()
 init_db()
 
 
@@ -91,13 +94,14 @@ def _draft_summary():
 
 
 # ---------------------------------------------------------------
-# Page body
+# Page header
 # ---------------------------------------------------------------
-st.title("💬 Customer Chat")
-st.caption(
-    'Type an order the way a customer would — English, Urdu, or Roman Urdu. '
-    'e.g. "2kg atta, 1 dozen eggs aur 2 doodh"'
+page_header(
+    "A better way to take orders",
+    "CUSTOMER AI DESK",
+    'Place an order or check product availability. Try: "2kg atta, 1 dozen eggs" or "Is 2 milk available?"',
 )
+
 
 # ---- Sidebar panels ----
 with st.sidebar:
@@ -126,10 +130,12 @@ with st.sidebar:
                 f"*(min {p['min_stock']})*"
             )
 
+
 # ---- Chat history ----
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+
 
 # ---- Order Draft panel ----
 if st.session_state.draft_items:
@@ -161,7 +167,7 @@ if st.session_state.draft_items:
     col_a, col_b, col_c = st.columns(3)
     with col_a:
         if st.button("✅ Confirm Order", use_container_width=True,
-                     disabled=len(summary["items"]) == 0):
+                     disabled=len(summary["items"]) == 0, type="primary"):
             result = execute_order(
                 summary,
                 customer=st.session_state.get("customer_name", "Guest"),
@@ -200,6 +206,7 @@ if st.session_state.draft_items:
             _trim_messages()
             st.rerun()
 
+
 # ---- Chat input ----
 user_msg = st.chat_input("Type your order...")
 if user_msg:
@@ -215,7 +222,6 @@ if user_msg:
             products = parsed.get("products", [])
             mismatches = parsed.get("unit_mismatch", [])
 
-            # Priority 1: unit mismatch
             if mismatches:
                 m = mismatches[0]
                 real = find_product(m.get("product", ""))
@@ -230,7 +236,6 @@ if user_msg:
                 }
                 reply = generate_reply(user_msg, "unit_mismatch", data, language)
 
-            # Priority 2: exceeds stock
             elif any(p.get("exceeds_stock") for p in products):
                 bad = next(p for p in products if p.get("exceeds_stock"))
                 data = {
