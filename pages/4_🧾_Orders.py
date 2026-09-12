@@ -7,12 +7,14 @@ from db import (
     update_order_status,
 )
 from inventory import accept_order, reject_order
+from styles import inject_theme, page_header, sidebar_brand, footer
 
 st.set_page_config(page_title="Orders · DukaanAI", page_icon="🧾", layout="wide")
+inject_theme()
+sidebar_brand()
 init_db()
 
 
-# ---- Cached helpers ----
 @st.cache_data(ttl=10)
 def cached_pending():
     return pending_orders()
@@ -28,9 +30,14 @@ def cached_items(order_id):
     return order_items_for(order_id)
 
 
-# ---- Page header ----
-st.title("🧾 Orders")
-st.caption("Review incoming orders — accept to confirm and deduct stock, or reject to cancel.")
+# ---------------------------------------------------------------
+# Page header
+# ---------------------------------------------------------------
+page_header(
+    "Every order, accounted for",
+    "ORDER PULSE",
+    "Review demand, move orders forward, and keep every customer promise visible.",
+)
 
 
 # ================================================================
@@ -51,7 +58,6 @@ if pending:
         ):
             st.markdown(f"**Placed:** {order['created_at'][:19]}")
 
-            # Items table
             if items:
                 st.markdown("**Items:**")
                 for it in items:
@@ -111,7 +117,6 @@ st.divider()
 # ================================================================
 st.subheader("📜 Order History")
 
-# ---- Filters row ----
 col1, col2 = st.columns([2, 3])
 with col1:
     status_filter = st.selectbox(
@@ -122,12 +127,10 @@ with col1:
 with col2:
     limit_choice = st.selectbox("Show orders", [10, 20, 50, 100], index=1)
 
-# ---- Fetch + filter ----
 all_orders = cached_recent(limit_choice)
 if status_filter != "All":
     all_orders = [o for o in all_orders if o["status"] == status_filter]
 
-# ---- Render ----
 if not all_orders:
     st.info(f"No orders found (filter: {status_filter}).")
 else:
@@ -155,7 +158,6 @@ else:
             else:
                 st.caption("No items.")
 
-            # Allow re-accepting a REJECTED order, or re-confirming a PENDING one
             if order["status"] == "PENDING":
                 c1, c2 = st.columns(2)
                 with c1:
@@ -185,3 +187,5 @@ else:
                     update_order_status(order["id"], "PENDING")
                     st.cache_data.clear()
                     st.rerun()
+
+footer()
