@@ -6,14 +6,14 @@ from db import (
     orders_by_customer,
     order_items_for,
 )
+from styles import inject_theme, page_header, sidebar_brand, footer
 
 st.set_page_config(page_title="Customers · DukaanAI", page_icon="👥", layout="wide")
+inject_theme()
+sidebar_brand()
 init_db()
 
 
-# ---------------------------------------------------------------
-# Cached helpers
-# ---------------------------------------------------------------
 @st.cache_data(ttl=30)
 def cached_customers():
     return all_customers()
@@ -32,13 +32,13 @@ def cached_items(order_id):
 # ---------------------------------------------------------------
 # Page header
 # ---------------------------------------------------------------
-st.title("👥 Customers")
-st.caption("Everyone who has placed an order — with totals and full history.")
+page_header(
+    "Know every regular",
+    "CUSTOMER RELATIONSHIPS",
+    "Keep customer details, order history, and repeat business in one calm workspace.",
+)
 
 
-# ===============================================================
-# Load all customers
-# ===============================================================
 customers = cached_customers()
 
 if not customers:
@@ -46,12 +46,11 @@ if not customers:
         "No customers yet. Place an order from **💬 Customer Chat** "
         "(use a real name instead of 'Guest') and they'll show up here."
     )
+    footer()
     st.stop()
 
 
-# ===============================================================
-# KPI row
-# ===============================================================
+# ---- KPIs ----
 total_customers = len(customers)
 total_revenue = sum(float(c["total_spent"] or 0) for c in customers)
 total_orders_all = sum(int(c["order_count"] or 0) for c in customers)
@@ -67,10 +66,7 @@ k4.metric("Avg Order Value", f"Rs.{avg_order_value:,.0f}")
 
 st.divider()
 
-
-# ===============================================================
-# Search
-# ===============================================================
+# ---- Search ----
 search = st.text_input("🔍 Search by customer name", value="", key="cust_search")
 filtered = customers
 if search.strip():
@@ -79,12 +75,11 @@ if search.strip():
 
 if not filtered:
     st.warning(f"No customers match '{search}'.")
+    footer()
     st.stop()
 
 
-# ===============================================================
-# Customer table
-# ===============================================================
+# ---- Table ----
 st.subheader(f"👤 Customers ({len(filtered)})")
 
 rows = []
@@ -99,13 +94,9 @@ for c in filtered:
 df = pd.DataFrame(rows)
 st.dataframe(df, use_container_width=True, hide_index=True)
 
-
 st.divider()
 
-
-# ===============================================================
-# Customer detail drill-down
-# ===============================================================
+# ---- Detail drill-down ----
 st.subheader("🔍 Customer Detail")
 
 customer_names = [c["customer"] for c in filtered]
@@ -156,3 +147,5 @@ if selected_name:
                     st.markdown(f"**Total:** Rs.{order['total']:.2f}")
                 else:
                     st.caption("No items recorded.")
+
+footer()
