@@ -95,7 +95,7 @@ def create_order(customer, items):
     code = "ORD-" + datetime.now().strftime("%Y%m%d%H%M%S")
     c.execute(
         "INSERT INTO orders (order_code, customer, total, status, created_at) VALUES (?,?,?,?,?)",
-        (code, customer, total, "CONFIRMED", datetime.now().isoformat())
+        (code, customer, total, "PENDING", datetime.now().isoformat())
     )
     order_id = c.lastrowid
     for i in items:
