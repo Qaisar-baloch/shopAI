@@ -11,6 +11,9 @@ Usage in any page:
 import streamlit as st
 
 
+# ===============================================================
+# Palette — Modern SaaS (deep navy · light main · electric blue)
+# ===============================================================
 NAVY = "#0F1729"
 NAVY_2 = "#1A2540"
 BLUE = "#3B82F6"
@@ -68,10 +71,18 @@ def inject_theme():
         .stApp {{
             background-color: {GRAY_BG};
         }}
+
+        /* Main content: push down so page-header pill is never clipped */
         .block-container {{
-            padding-top: 2rem;
+            padding-top: 3.5rem !important;
             padding-bottom: 3rem;
             max-width: 1300px;
+        }}
+
+        /* Shrink Streamlit's internal header so it doesn't overlap */
+        [data-testid="stHeader"] {{
+            height: 2rem;
+            background: transparent;
         }}
 
         [data-testid="stSidebar"] {{
@@ -215,8 +226,11 @@ def inject_theme():
             border: 1px solid {GRAY_BORDER};
         }}
 
+        /* Page header block — pill + title + subtitle */
         .page-header {{
+            margin-top: 0.5rem;
             margin-bottom: 1.5rem;
+            padding-top: 0.5rem;
         }}
         .page-header .pill {{
             display: inline-block;
@@ -226,10 +240,11 @@ def inject_theme():
             letter-spacing: 0.12em;
             color: {BLUE};
             background: {BLUE}15;
-            padding: 4px 12px;
+            padding: 5px 12px;
             border-radius: 999px;
-            margin-bottom: 12px;
+            margin-bottom: 14px;
             border: 1px solid {BLUE}33;
+            line-height: 1;
         }}
         .page-header .title {{
             font-family: 'Space Grotesk', sans-serif;
