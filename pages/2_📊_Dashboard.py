@@ -14,7 +14,6 @@ st.set_page_config(page_title="Dashboard · DukaanAI", page_icon="📊", layout=
 init_db()
 
 
-# ---- Cached helpers ----
 @st.cache_data(ttl=30)
 def cached_recent_orders(limit=20):
     return recent_orders(limit)
@@ -50,7 +49,6 @@ def cached_inventory_health():
     return inventory_health()
 
 
-# ---- Page body ----
 st.title("📊 Shopkeeper Dashboard")
 
 with st.sidebar:
@@ -75,11 +73,13 @@ k3.metric("Low-Stock Items", f"{health['low']}/{health['total_products']}")
 k4.metric("Stock Value", f"Rs.{health['total_stock_value']:,.0f}")
 
 if stats.get("pending_count", 0) > 0:
-    st.warning(f"🔔 **{stats['pending_count']} pending order(s)** — go to the 🧾 Orders page to accept or reject.")
+    st.warning(
+        f"🔔 {stats['pending_count']} pending order(s) — "
+        f"go to the 🧾 Orders page to accept or reject."
+    )
 
 st.divider()
 
-# Restock recommendations
 st.subheader("🧠 Restock Recommendation Agent")
 st.caption("Based on last 14 days of sales + current stock vs. minimum stock.")
 
@@ -88,14 +88,29 @@ if not recs:
     st.success("✅ All products are above minimum stock. No restock needed.")
 else:
     df = pd.DataFrame(recs)
-    df = df[[
-        "priority", "name", "current_stock", "min_stock",
-        "sold_last_14d", "avg_daily_sales",
-        "suggested_reorder_qty", "unit", "estimated_cost",
-    ]]
+    df = df[
+        [
+            "priority",
+            "name",
+            "current_stock",
+            "min_stock",
+            "sold_last_14d",
+            "avg_daily_sales",
+            "suggested_reorder_qty",
+            "unit",
+            "estimated_cost",
+        ]
+    ]
     df.columns = [
-        "Priority", "Product", "In Stock", "Min", "Sold (14d)",
-        "Avg/Day", "Reorder Qty", "Unit", "Est. Cost (Rs.)",
+        "Priority",
+        "Product",
+        "In Stock",
+        "Min",
+        "Sold (14d)",
+        "Avg/Day",
+        "Reorder Qty",
+        "Unit",
+        "Est. Cost (Rs.)",
     ]
     st.dataframe(df, use_container_width=True, hide_index=True)
     total_cost = sum(r["estimated_cost"] for r in recs)
@@ -103,7 +118,6 @@ else:
 
 st.divider()
 
-# Sales analytics
 col_a, col_b = st.columns(2)
 with col_a:
     st.subheader("📈 Sales by Day")
@@ -125,10 +139,18 @@ with col_b:
 
 st.divider()
 
-# Recent orders
 st.subheader("🧾 Recent Orders")
 recent = cached_recent_orders(20)
 if recent:
-    df_recent = pd.DataFrame(recent)[[
-        "order_code", "customer", "total", "status", "created_at",
-   
+    columns_to_show = ["order_code", "customer", "total", "status", "created_at"]
+    df_recent = pd.DataFrame(recent)[columns_to_show]
+    df_recent.columns = [
+        "Order Code",
+        "Customer",
+        "Total (Rs.)",
+        "Status",
+        "Created",
+    ]
+    st.dataframe(df_recent, use_container_width=True, hide_index=True)
+else:
+    st.caption("No orders yet.")
