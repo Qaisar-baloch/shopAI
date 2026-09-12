@@ -21,9 +21,6 @@ def cached_products():
     return list_products()
 
 
-# ---------------------------------------------------------------
-# Page header
-# ---------------------------------------------------------------
 page_header(
     "Know what is moving",
     "INVENTORY OPERATIONS",
@@ -31,9 +28,6 @@ page_header(
 )
 
 
-# ---------------------------------------------------------------
-# Tabs
-# ---------------------------------------------------------------
 tab_view, tab_add, tab_edit = st.tabs(["👁️ View Products", "➕ Add Product", "✏️ Edit / Delete"])
 
 
@@ -54,8 +48,10 @@ with tab_view:
             unit_filter = st.selectbox("Unit", ["All"] + units, index=0, key="inv_unit")
         with col3:
             status_filter = st.selectbox(
-                "Status", ["All", "In Stock", "Low Stock", "Out of Stock"],
-                index=0, key="inv_status",
+                "Status",
+                ["All", "In Stock", "Low Stock", "Out of Stock"],
+                index=0,
+                key="inv_status",
             )
 
         filtered = products
@@ -135,4 +131,160 @@ with tab_add:
             name = st.text_input("Product name *", placeholder="e.g. Basmati Rice")
             aliases = st.text_input(
                 "Aliases (comma-separated)",
-                placeholder="e.g. rice, chawal
+                placeholder="rice, chawal, basmati",
+            )
+            unit = st.selectbox(
+                "Unit *",
+                ["kg", "gram", "litre", "ml", "dozen", "piece", "packet"],
+                index=0,
+            )
+        with col_b:
+            unit_price = st.number_input(
+                "Unit price (Rs.) *",
+                min_value=0.0,
+                step=1.0,
+                value=100.0,
+            )
+            current_stock = st.number_input(
+                "Current stock *",
+                min_value=0.0,
+                step=1.0,
+                value=10.0,
+            )
+            min_stock = st.number_input(
+                "Minimum stock threshold *",
+                min_value=0.0,
+                step=1.0,
+                value=3.0,
+            )
+
+        submitted = st.form_submit_button("✅ Add Product", use_container_width=True)
+
+        if submitted:
+            if not name.strip():
+                st.error("Product name is required.")
+            else:
+                try:
+                    add_product(
+                        name=name.strip(),
+                        aliases=aliases.strip(),
+                        unit=unit,
+                        unit_price=float(unit_price),
+                        current_stock=float(current_stock),
+                        min_stock=float(min_stock),
+                    )
+                    st.success(f"✅ Added **{name}** to inventory.")
+                    st.cache_data.clear()
+                except Exception as e:
+                    if "UNIQUE" in str(e).upper():
+                        st.error(f"❌ A product named **{name}** already exists.")
+                    else:
+                        st.error(f"❌ Failed to add product: {e}")
+
+
+# ===============================================================
+# TAB 3 — EDIT / DELETE
+# ===============================================================
+with tab_edit:
+    products = cached_products()
+
+    if not products:
+        st.info("No products to edit yet.")
+    else:
+        st.subheader("✏️ Edit or Delete a Product")
+
+        product_labels = {
+            f"{p['name']} · {p['unit']} · Rs.{p['unit_price']} · stock {p['current_stock']}": p
+            for p in products
+        }
+
+        selected_label = st.selectbox(
+            "Select a product",
+            list(product_labels.keys()),
+            key="edit_select",
+        )
+        selected = product_labels[selected_label]
+
+        st.divider()
+
+        with st.form("edit_product_form"):
+            st.markdown(f"**Editing:** `{selected['name']}` (ID #{selected['id']})")
+
+            col_a, col_b = st.columns(2)
+            with col_a:
+                e_name = st.text_input("Name", value=selected["name"])
+                e_aliases = st.text_input("Aliases", value=selected["aliases"] or "")
+                e_unit = st.selectbox(
+                    "Unit",
+                    ["kg", "gram", "litre", "ml", "dozen", "piece", "packet"],
+                    index=(
+                        ["kg", "gram", "litre", "ml", "dozen", "piece", "packet"]
+                        .index(selected["unit"])
+                        if selected["unit"] in ["kg", "gram", "litre", "ml", "dozen", "piece", "packet"]
+                        else 0
+                    ),
+                )
+            with col_b:
+                e_price = st.number_input(
+                    "Unit price (Rs.)",
+                    min_value=0.0,
+                    step=1.0,
+                    value=float(selected["unit_price"]),
+                )
+                e_stock = st.number_input(
+                    "Current stock",
+                    min_value=0.0,
+                    step=1.0,
+                    value=float(selected["current_stock"]),
+                )
+                e_min = st.number_input(
+                    "Minimum stock",
+                    min_value=0.0,
+                    step=1.0,
+                    value=float(selected["min_stock"]),
+                )
+
+            col_save, col_delete = st.columns(2)
+            with col_save:
+                save_clicked = st.form_submit_button(
+                    "💾 Save Changes",
+                    use_container_width=True,
+                    type="primary",
+                )
+            with col_delete:
+                delete_clicked = st.form_submit_button(
+                    "🗑️ Delete Product",
+                    use_container_width=True,
+                )
+
+            if save_clicked:
+                try:
+                    update_product(
+                        pid=selected["id"],
+                        name=e_name.strip(),
+                        aliases=e_aliases.strip(),
+                        unit=e_unit,
+                        unit_price=float(e_price),
+                        current_stock=float(e_stock),
+                        min_stock=float(e_min),
+                    )
+                    st.success(f"✅ Updated **{e_name}**.")
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as e:
+                    if "UNIQUE" in str(e).upper():
+                        st.error(f"❌ Another product already uses the name **{e_name}**.")
+                    else:
+                        st.error(f"❌ Failed to update: {e}")
+
+            if delete_clicked:
+                try:
+                    delete_product(selected["id"])
+                    st.success(f"🗑️ Deleted **{selected['name']}**.")
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Failed to delete: {e}")
+
+
+footer()
