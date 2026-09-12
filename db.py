@@ -253,3 +253,82 @@ def product_stock_snapshot():
     """).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+    # ---------------------------------------------------------------
+# Phase U1: multi-page helpers
+# ---------------------------------------------------------------
+def add_product(name, aliases, unit, unit_price, current_stock, min_stock):
+    conn = get_conn()
+    conn.execute("""
+        INSERT INTO products (name, aliases, unit, unit_price, current_stock, min_stock)
+        VALUES (?,?,?,?,?,?)
+    """, (name, aliases, unit, unit_price, current_stock, min_stock))
+    conn.commit()
+    conn.close()
+
+
+def update_product(pid, name, aliases, unit, unit_price, current_stock, min_stock):
+    conn = get_conn()
+    conn.execute("""
+        UPDATE products
+        SET name=?, aliases=?, unit=?, unit_price=?, current_stock=?, min_stock=?
+        WHERE id=?
+    """, (name, aliases, unit, unit_price, current_stock, min_stock, pid))
+    conn.commit()
+    conn.close()
+
+
+def delete_product(pid):
+    conn = get_conn()
+    conn.execute("DELETE FROM products WHERE id=?", (pid,))
+    conn.commit()
+    conn.close()
+
+
+def all_customers():
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT customer,
+               COUNT(*) AS order_count,
+               SUM(total) AS total_spent,
+               MAX(created_at) AS last_order
+        FROM orders
+        WHERE customer IS NOT NULL AND customer != 'Guest'
+        GROUP BY customer
+        ORDER BY total_spent DESC
+    """).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def orders_by_customer(customer):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM orders WHERE customer = ? ORDER BY id DESC", (customer,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_order_status(order_id, status):
+    conn = get_conn()
+    conn.execute("UPDATE orders SET status=? WHERE id=?", (status, order_id))
+    conn.commit()
+    conn.close()
+
+
+def pending_orders():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM orders WHERE status='PENDING' ORDER BY id ASC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def order_items_for(order_id):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM order_items WHERE order_id=?", (order_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
