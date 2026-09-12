@@ -1,5 +1,6 @@
 ﻿import os
 import json
+import functools 
 from groq import Groq
 from db import find_product, list_products
 
@@ -7,6 +8,7 @@ from db import find_product, list_products
 # ---------------------------------------------------------------
 # Groq Client
 # ---------------------------------------------------------------
+@functools.lru_cache(maxsize=1)
 def get_client():
     """
     Initialize Groq client. Key lookup order:
