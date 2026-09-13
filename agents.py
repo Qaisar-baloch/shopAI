@@ -35,129 +35,288 @@ def get_client():
             except Exception:
                 pass
     if not api_key or not str(api_key).startswith("gsk_"):
-        raise ValueError(
-            "GROQ_API_KEY not found or invalid.\n"
-            'Set it in .streamlit/secrets.toml as: GROQ_API_KEY = "gsk_..."'
-        )
+        raise ValueError("GROQ_API_KEY not found or invalid.")
     return Groq(api_key=api_key)
 
 
 # ---------------------------------------------------------------
-# Compact catalog — sends FAR fewer tokens to Groq
+# Unit helpers
 # ---------------------------------------------------------------
-@functools.lru_cache(maxsize=1)
-def _compact_catalog():
-    """Single-line-per-product compact catalog. Refreshes only on process restart."""
-    lines = []
-    for p in list_products():
-        lines.append(f"{p['name']}|{p['unit']}|{p['unit_price']}")
-    return "\n".join(lines)
-
-
 DIVISIBLE_UNITS = {"kg", "gram", "litre", "ml"}
+INDIVISIBLE_UNITS = {"piece", "dozen", "bag", "pack", "packet", "bottle"}
+
+ALIAS_HINTS = {
+    "atta": "atta", "aata": "atta", "flour": "atta",
+    "chawal": "rice", "rice": "rice", "basmati": "rice",
+    "doodh": "milk", "milk": "milk", "dudh": "milk",
+    "anday": "eggs", "anda": "eggs", "egg": "eggs", "eggs": "eggs",
+    "cheeni": "sugar", "sugar": "sugar", "shakar": "sugar", "shakkar": "sugar",
+    "namak": "salt", "salt": "salt",
+    "tel": "oil", "oil": "oil", "cooking": "oil",
+    "patti": "tea", "chai": "tea", "tea": "tea",
+    "bread": "bread", "roti": "bread", "double": "bread",
+    "sabun": "soap", "soap": "soap",
+    "pani": "water", "water": "water", "nestle": "water",
+    "chips": "lays", "lays": "lays", "kurkure": "kurkure",
+    "biscuit": "biscuit", "biscuits": "biscuit",
+    "shampoo": "shampoo",
+    "cheese": "cheese", "paneer": "cheese",
+    "butter": "butter", "makhan": "butter",
+    "yogurt": "yogurt", "dahi": "yogurt", "curd": "yogurt",
+    "dalda": "dalda", "ghee": "dalda", "banaspati": "dalda",
+    "cream": "cream", "balai": "cream", "malai": "cream",
+    "coke": "coca", "cola": "coca", "pepsi": "pepsi", "sprite": "sprite",
+    "bun": "bun", "buns": "bun", "rusk": "rusk",
+    "surf": "surf", "ariel": "ariel",
+    "lux": "lux", "lifebuoy": "lifebuoy", "safeguard": "safeguard",
+    "pantene": "pantene", "colgate": "colgate",
+    "coca": "coca", "slice": "slice", "fanta": "fanta",
+    "sooper": "sooper", "oreo": "oreo", "good": "good",
+    "dairy": "dairy", "milk": "milk",
+    "olive": "olive", "red": "red", "turmeric": "turmeric", "haldi": "turmeric",
+    "cumin": "cumin", "zeera": "cumin", "jeera": "cumin",
+    "garam": "garam", "masala": "masala",
+}
 
 
 # ---------------------------------------------------------------
-# LOCAL regex parser — no API call, never fails, used as fallback
+# SKU resolution — matches a requested quantity to the closest SKU
+# ---------------------------------------------------------------
+def _extract_sku_size(product_name):
+    """
+    Returns (base_size, base_unit) from a product name like 'Atta 5kg'.
+    None if no size is embedded.
+    """
+    name = product_name.lower()
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(kg|kgs|g|gram|grams|litre|liter|ltr|l|ml|pcs|pc|piece|pieces|dozen|pack|packet|bag|bottle)", name)
+    if not m:
+        return None, None
+    size = float(m.group(1))
+    raw = m.group(2)
+
+    # Normalize to base unit
+    if raw in ("kg", "kgs"):
+        return size, "kg"
+    if raw in ("g", "gram", "grams"):
+        return size / 1000.0, "kg"
+    if raw in ("l", "litre", "liter", "ltr"):
+        return size, "litre"
+    if raw == "ml":
+        return size / 1000.0, "litre"
+    if raw in ("pcs", "pc", "piece", "pieces"):
+        return size, "piece"
+    if raw == "dozen":
+        return size, "dozen"
+    if raw in ("pack", "packet"):
+        return size, "pack"
+    if raw == "bag":
+        return size, "bag"
+    if raw == "bottle":
+        return size, "bottle"
+    return None, None
+
+
+def _normalize_unit(unit):
+    if not unit:
+        return None
+    u = unit.lower().strip()
+    if u in ("kilo", "kilos", "kg", "kgs", "kilogram", "kilograms"):
+        return "kg"
+    if u in ("g", "gram", "grams"):
+        return "kg"  # treat as kg base
+    if u in ("liter", "litre", "ltr", "l", "liters", "litres"):
+        return "litre"
+    if u in ("ml", "milliliter", "millilitre"):
+        return "litre"
+    if u in ("pc", "pcs", "piece", "pieces"):
+        return "piece"
+    if u == "dozen":
+        return "dozen"
+    if u in ("pack", "packet", "packets", "packs"):
+        return "pack"
+    if u == "bag":
+        return "bag"
+    if u == "bottle":
+        return "bottle"
+    return u
+
+
+def _resolve_sku(product_fragment, requested_qty, user_unit):
+    """
+    Given "atta" + qty 10 + unit "kg", find the best SKU:
+      - If Atta 10kg exists → that SKU, quantity 1
+      - Else if Atta 5kg exists → that SKU, quantity ceil(10/5) = 2
+      - Else → Atta 5kg with quantity 10 (imperfect but fallback)
+
+    Returns: (product_dict, adjusted_quantity, note)
+    """
+    products = list_products()
+    fragment = product_fragment.lower()
+
+    # Direct name match first
+    direct = find_product(product_fragment)
+    if direct and not any(c.isdigit() for c in fragment):
+        # matched by name/alias directly
+        matches = [direct]
+    else:
+        matches = [p for p in products if fragment in p["name"].lower()]
+
+    # If nothing matched, try alias
+    if not matches:
+        alias_target = ALIAS_HINTS.get(fragment)
+        if alias_target:
+            matches = [p for p in products if alias_target in p["name"].lower()]
+
+    if not matches:
+        return None, None, None
+
+    user_unit_norm = _normalize_unit(user_unit)
+
+    # ---- Case 1: user gave a specific quantity in a divisible unit ----
+    if user_unit_norm in ("kg", "litre") and requested_qty:
+        # Convert user's qty to base unit
+        if user_unit_norm == "kg":
+            target_base = requested_qty if (user_unit or "").lower() not in ("g", "gram", "grams") else requested_qty / 1000.0
+        else:  # litre
+            target_base = requested_qty if (user_unit or "").lower() != "ml" else requested_qty / 1000.0
+
+        # Try to find a SKU whose size ≈ target_base
+        best_exact = None
+        for p in matches:
+            size, base = _extract_sku_size(p["name"])
+            if base and base == user_unit_norm and size and abs(size - target_base) < 0.1:
+                best_exact = p
+                break
+        if best_exact:
+            return best_exact, 1.0, f"{best_exact['name']}"
+
+        # No exact size SKU — pick smallest SKU and compute quantity
+        smallest = None
+        smallest_size = None
+        for p in matches:
+            size, base = _extract_sku_size(p["name"])
+            if base and base == user_unit_norm and size:
+                if smallest_size is None or size < smallest_size:
+                    smallest = p
+                    smallest_size = size
+        if smallest:
+            import math
+            qty = math.ceil(target_base / smallest_size)
+            note = f"{qty} × {smallest['name']} ({smallest_size}{user_unit_norm} each)"
+            return smallest, float(qty), note
+
+        # Fall back to first match
+        return matches[0], requested_qty, None
+
+    # ---- Case 2: unit matches catalog unit (piece/dozen/bag/pack) ----
+    if user_unit_norm:
+        for p in matches:
+            if p["unit"].lower() == user_unit_norm:
+                # fraction on indivisible unit → round up
+                if user_unit_norm in INDIVISIBLE_UNITS and requested_qty and requested_qty < 1:
+                    return p, 1.0, f"rounded up to 1 {p['unit']} of {p['name']}"
+                return p, float(requested_qty) if requested_qty else 1.0, None
+
+    # ---- Case 3: no unit given, just a name ----
+    return matches[0], float(requested_qty) if requested_qty else 1.0, None
+
+
+# ---------------------------------------------------------------
+# Local parser — primary parser, no API needed
 # ---------------------------------------------------------------
 def _local_parse(message: str) -> dict:
-    """
-    Regex-based backup parser. Handles the most common patterns so the
-    app works even when Groq is rate-limited or offline.
-    """
     msg = message.lower().strip()
     products = []
     spend_orders = []
     unknown = []
+    seen_ids = set()
 
-    # Small alias → catalog name mapping
-    ALIAS_HINTS = {
-        "atta": "atta", "aata": "atta", "flour": "atta",
-        "chawal": "rice", "rice": "rice",
-        "doodh": "milk", "milk": "milk", "dudh": "milk",
-        "anday": "eggs", "anda": "eggs", "egg": "eggs", "eggs": "eggs",
-        "cheeni": "sugar", "sugar": "sugar", "shakar": "sugar",
-        "namak": "salt", "salt": "salt",
-        "tel": "oil", "oil": "oil",
-        "patti": "tea", "chai": "tea", "tea": "tea",
-        "bread": "bread", "roti": "bread",
-        "sabun": "soap", "soap": "soap",
-        "pani": "water", "water": "water",
-        "chips": "lays", "lays": "lays",
-        "biscuit": "biscuit",
-        "shampoo": "shampoo",
-        "cheese": "cheese", "paneer": "cheese",
-        "butter": "butter", "makhan": "butter",
-        "yogurt": "yogurt", "dahi": "yogurt",
-        "dalda": "dalda", "ghee": "dalda",
-        "shakkar": "sugar",
-        "biscuits": "biscuit",
-    }
-
-    # ---- Spend orders: "100 ka tel", "200 ke eggs", "50 rupees of oil" ----
+    # ---------- Spend orders: "100 ka tel", "200 ke eggs" ----------
     spend_pattern = re.compile(
-        r"(\d+)\s*(?:rs|rupay|rupaye|pkr|rupees?|ka|ke|ki|of)\s+([a-z]+)",
+        r"(\d+)\s*(?:rs\.?|rupay[ae]?|pkr|rupees?|ka|ke|ki|of)\s+([a-z]+)",
         re.IGNORECASE
     )
     for m in spend_pattern.finditer(msg):
         amount = float(m.group(1))
         word = m.group(2).lower()
         real = find_product(word) or find_product(ALIAS_HINTS.get(word, ""))
-        if real:
+        if real and real["id"] not in seen_ids:
+            seen_ids.add(real["id"])
+            up = float(real["unit_price"])
+            full = int(amount // up) if up > 0 else 0
+            frac = round(amount / up, 2)
+            left = round(amount - full * up, 2)
+            is_div = real["unit"].lower() in DIVISIBLE_UNITS
             spend_orders.append({
                 "product": real["name"],
                 "product_id": real["id"],
                 "amount": amount,
                 "unit": real["unit"],
-                "unit_price": float(real["unit_price"]),
-                "computed_quantity": round(amount / float(real["unit_price"]), 2),
-                "fulfilment": "fraction" if real["unit"].lower() in DIVISIBLE_UNITS else "full_units_with_leftover",
-                "full_units": int(amount // float(real["unit_price"])),
-                "leftover": round(amount - (int(amount // float(real["unit_price"])) * float(real["unit_price"])), 2),
+                "unit_price": up,
+                "computed_quantity": frac if is_div else full,
+                "fulfilment": "fraction" if is_div else ("full_units_with_leftover" if full >= 1 else "insufficient"),
+                "full_units": full,
+                "leftover": left,
                 "stock_available": float(real["current_stock"]),
-                "exceeds_stock": False,
+                "exceeds_stock": (frac if is_div else full) > float(real["current_stock"]),
             })
 
-    # ---- Quantity orders: "2kg atta", "1 dozen eggs", "half milk" ----
-    # Try "num unit product" first
+    # ---------- Quantity orders: "2kg atta", "1 dozen eggs", "half milk" ----------
+    FRACTIONS = {"half": 0.5, "aadha": 0.5, "adha": 0.5, "quarter": 0.25, "pao": 0.25}
     qty_pattern = re.compile(
-        r"(\d+(?:\.\d+)?|half|aadha|quarter|pao)\s*"
-        r"(kg|kilo|kgs|gram|g|litre|liter|l|ml|dozen|piece|pieces|pack|packet|bag|bottle|pcs|pc)?\s+"
+        r"(\d+(?:\.\d+)?|half|aadha|adha|quarter|pao)\s*"
+        r"(kg|kgs|kilo|kilos|gram|grams|g|"
+        r"litre|liter|ltr|l|ml|"
+        r"dozen|piece|pieces|pcs|pc|"
+        r"pack|packet|packs|bag|bottle)?\s+"
         r"([a-z]+)",
         re.IGNORECASE
     )
-    FRACTIONS = {"half": 0.5, "aadha": 0.5, "quarter": 0.25, "pao": 0.25}
-
     for m in qty_pattern.finditer(msg):
         raw_qty = m.group(1).lower()
-        qty = FRACTIONS.get(raw_qty, None)
+        qty = FRACTIONS.get(raw_qty)
         if qty is None:
             try:
                 qty = float(raw_qty)
             except ValueError:
                 continue
+        unit_raw = m.group(2)
         word = m.group(3).lower()
-        real = find_product(word) or find_product(ALIAS_HINTS.get(word, ""))
-        if real:
-            # skip if already covered by spend order
-            if any(s["product"] == real["name"] for s in spend_orders):
-                continue
+
+        # Skip if this word was already consumed by a spend order
+        if word in ("rs", "rs.", "rupay", "pkr", "rupees", "ka", "ke", "ki", "of"):
+            continue
+        if word in ALIAS_HINTS.values() or find_product(word):
+            pass  # valid product word
+        else:
+            continue
+
+        resolved, adjusted_qty, note = _resolve_sku(word, qty, unit_raw)
+        if resolved and resolved["id"] not in seen_ids:
+            seen_ids.add(resolved["id"])
             products.append({
-                "product": real["name"],
-                "product_id": real["id"],
-                "quantity": qty,
-                "unit": real["unit"],
-                "unit_price": float(real["unit_price"]),
-                "stock_available": float(real["current_stock"]),
-                "exceeds_stock": qty > float(real["current_stock"]),
+                "product": resolved["name"],
+                "product_id": resolved["id"],
+                "quantity": adjusted_qty,
+                "unit": resolved["unit"],
+                "unit_price": float(resolved["unit_price"]),
+                "stock_available": float(resolved["current_stock"]),
+                "exceeds_stock": adjusted_qty > float(resolved["current_stock"]),
+                "note": note,
             })
 
-    # ---- Detect unknown product words (bigrams that aren't in catalog) ----
+    # ---------- Bare product name: "milk" alone, or "chawal hai?" ----------
     if not products and not spend_orders:
-        # If nothing matched at all, try single-word product lookup
-        for word in re.findall(r"[a-z]+", msg):
-            real = find_product(word) or find_product(ALIAS_HINTS.get(word, ""))
-            if real:
+        # Detect unknown products first
+        product_words = re.findall(r"\b([a-z]{3,})\b", msg)
+        for w in product_words:
+            if w in ("the", "and", "for", "with", "have", "want", "need", "please",
+                     "give", "some", "hai", "kya", "ka", "ke", "ki", "aur", "chahiye",
+                     "dedo", "hain", "mein", "se", "par"):
+                continue
+            real = find_product(w) or find_product(ALIAS_HINTS.get(w, ""))
+            if real and real["id"] not in seen_ids:
+                seen_ids.add(real["id"])
                 products.append({
                     "product": real["name"],
                     "product_id": real["id"],
@@ -166,176 +325,113 @@ def _local_parse(message: str) -> dict:
                     "unit_price": float(real["unit_price"]),
                     "stock_available": float(real["current_stock"]),
                     "exceeds_stock": False,
+                    "note": "assumed 1",
                 })
-                break
+                break  # one bare product at a time
+
+    # ---------- Intent inference ----------
+    if products or spend_orders:
+        intent = "spend_based_order" if (spend_orders and not products) else "order_intent"
+    elif any(w in msg for w in ("hi", "hello", "salam", "assalam", "hey", "aoaa")):
+        intent = "greeting"
+    elif any(w in msg for w in ("stock", "inventory", "kya kya", "show me", "list", "menu", "dikhao")):
+        intent = "inventory_query"
+    elif any(w in msg for w in ("yes", "haan", "ok", "confirm", "theek")):
+        intent = "confirm"
+    elif any(w in msg for w in ("no", "nahi", "cancel", "chhoro")):
+        intent = "cancel"
+    elif any(w in msg for w in ("available", "kitne", "rate", "price", "how much", "kya hai")):
+        intent = "product_query"
+    else:
+        intent = "other"
+
+    # Language guess
+    ur_words = ("hai", "kya", "ka", "ke", "ki", "aur", "chahiye", "dedo", "hain", "mein", "kaisa")
+    language = "ur_roman" if any(w in msg for w in ur_words) else "en"
 
     return {
-        "intent": "order_intent" if (products or spend_orders) else "other",
-        "language": "ur_roman" if any(w in msg for w in ["hai", "ka", "ke", "aur", "chahiye", "do"]) else "en",
+        "intent": intent,
+        "language": language,
         "products": products,
         "spend_orders": spend_orders,
         "unit_mismatch": [],
         "unknown": unknown,
-        "_source": "local_regex",   # debug marker
+        "_source": "local",
     }
 
 
 # ---------------------------------------------------------------
-# Classifier prompt — compact catalog
+# Optional Groq enhancement — only used if local parser finds nothing
 # ---------------------------------------------------------------
-CLASSIFIER_PROMPT = """Classify the customer message for a Pakistani kiryana shop.
+CLASSIFIER_PROMPT = """Classify this customer message for a kiryana shop.
 
-CATALOG (name|unit|price):
-{catalog}
+Return JSON only. One of these intents: greeting, product_query, inventory_query, price_query, order_intent, spend_based_order, confirm, cancel, other.
 
-Pick ONE intent: greeting | product_query | inventory_query | price_query | order_intent | spend_based_order | confirm | cancel | other
-
-EXTRACT ALL items in one message. Return valid JSON:
-{{"intent":"order_intent","language":"en","products":[{{"product":"Atta 5kg","quantity":2,"unit":"bag"}}],"spend_orders":[],"unit_mismatch":[],"unknown":[]}}
-
-RULES:
-- Multiple items separated by commas/and/aur → all extracted.
-- "100 ka tel" → spend_orders:[{{"product":"Cooking Oil 1L","amount":100}}]
-- "10 kg aata" → pick Atta 10kg with quantity 1
-- "half milk" → quantity 0.5
-- Unknown products → "unknown" array
-- Currency always "Rs."
-
-EXAMPLES:
-"hi" → {{"intent":"greeting","language":"en","products":[],"spend_orders":[],"unit_mismatch":[],"unknown":[]}}
-"2kg atta, 3 eggs, half milk" → {{"intent":"order_intent","language":"ur_roman","products":[{{"product":"Atta 5kg","quantity":1,"unit":"bag"}},{{"product":"Eggs 12 pcs","quantity":3,"unit":"dozen"}},{{"product":"Milk 1L","quantity":0.5,"unit":"piece"}}],"spend_orders":[],"unit_mismatch":[],"unknown":[]}}
-"i need 10 kg aata, 1 dozen eggs and 2 litre oil" → {{"intent":"order_intent","language":"en","products":[{{"product":"Atta 10kg","quantity":1,"unit":"bag"}},{{"product":"Eggs 12 pcs","quantity":1,"unit":"dozen"}},{{"product":"Cooking Oil 1L","quantity":2,"unit":"bottle"}}],"spend_orders":[],"unit_mismatch":[],"unknown":[]}}
-"100 ka tel" → {{"intent":"spend_based_order","language":"ur_roman","products":[],"spend_orders":[{{"product":"Cooking Oil 1L","amount":100,"unit":"currency"}}],"unit_mismatch":[],"unknown":[]}}
-"1 pizza" → {{"intent":"order_intent","language":"en","products":[],"spend_orders":[],"unit_mismatch":[],"unknown":["pizza"]}}
-"stock me kia kia hai?" → {{"intent":"inventory_query","language":"ur_roman","products":[],"spend_orders":[],"unit_mismatch":[],"unknown":[]}}
+Format: {"intent":"...","language":"en","products":[],"spend_orders":[],"unit_mismatch":[],"unknown":[]}
 """
 
 
-def classify_message(message: str, max_retries: int = 2) -> dict:
+def _groq_parse(message: str) -> dict | None:
+    """Only called when local parser fails."""
+    try:
+        client = get_client()
+        resp = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[
+                {"role": "system", "content": CLASSIFIER_PROMPT},
+                {"role": "user", "content": message},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.1,
+            max_tokens=250,
+        )
+        return json.loads(resp.choices[0].message.content)
+    except Exception:
+        return None
+
+
+def classify_message(message: str) -> dict:
     """
-    Try Groq classifier with retries. On total failure, use local regex parser.
-    Never returns empty silently.
+    Primary: local regex parser (fast, free, no rate limit).
+    Only call Groq if local parser returns nothing meaningful.
     """
-    catalog = _compact_catalog()
-    prompt = CLASSIFIER_PROMPT.replace("{catalog}", catalog)
-
-    last_error = None
-    for attempt in range(max_retries):
-        try:
-            client = get_client()
-            resp = client.chat.completions.create(
-                model="openai/gpt-oss-120b",
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": message},
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.1,
-                max_tokens=600,
-            )
-            parsed = json.loads(resp.choices[0].message.content)
-
-            # ---- Validate regular products ----
-            validated = []
-            unknown = list(parsed.get("unknown", []))
-            for item in parsed.get("products", []):
-                real = find_product(item.get("product", ""))
-                if real:
-                    qty = float(item.get("quantity", 0))
-                    validated.append({
-                        "product": real["name"],
-                        "product_id": real["id"],
-                        "quantity": qty,
-                        "unit": real["unit"],
-                        "unit_price": float(real["unit_price"]),
-                        "stock_available": float(real["current_stock"]),
-                        "exceeds_stock": qty > float(real["current_stock"]),
-                    })
-                else:
-                    unknown.append(item.get("product"))
-
-            # ---- Validate spend orders ----
-            validated_spend = []
-            for so in parsed.get("spend_orders", []):
-                real = find_product(so.get("product", ""))
-                amount = float(so.get("amount", 0))
-                if not real or amount <= 0:
-                    if not real:
-                        unknown.append(so.get("product"))
-                    continue
-                up = float(real["unit_price"])
-                full = int(amount // up) if up > 0 else 0
-                frac = round(amount / up, 2)
-                left = round(amount - full * up, 2)
-                is_div = real["unit"].lower() in DIVISIBLE_UNITS
-                validated_spend.append({
-                    "product": real["name"],
-                    "product_id": real["id"],
-                    "amount": amount,
-                    "unit": real["unit"],
-                    "unit_price": up,
-                    "computed_quantity": frac if is_div else full,
-                    "fulfilment": "fraction" if is_div else ("full_units_with_leftover" if full >= 1 else "insufficient"),
-                    "full_units": full,
-                    "leftover": left,
-                    "stock_available": float(real["current_stock"]),
-                    "exceeds_stock": (frac if is_div else full) > float(real["current_stock"]),
-                })
-
-            result = {
-                "intent": parsed.get("intent", "other"),
-                "language": parsed.get("language", "en"),
-                "products": validated,
-                "spend_orders": validated_spend,
-                "unit_mismatch": parsed.get("unit_mismatch", []),
-                "unknown": unknown,
-                "_source": "groq",
-            }
-
-            # If classifier returned NOTHING for a real order, try the local parser
-            if not validated and not validated_spend and not unknown:
-                local = _local_parse(message)
-                if local["products"] or local["spend_orders"]:
-                    return local
-
-            return result
-
-        except Exception as e:
-            last_error = str(e)
-            err_lower = last_error.lower()
-            is_rate_limit = "rate" in err_lower or "429" in err_lower or "quota" in err_lower
-            if is_rate_limit and attempt < max_retries - 1:
-                time.sleep(2 ** attempt)  # 1s, 2s backoff
-                continue
-            break
-
-    # ---- All retries failed — fall back to local regex parser ----
     local = _local_parse(message)
-    local["_error"] = last_error
+
+    # If local parser found anything, use it
+    if local["products"] or local["spend_orders"]:
+        return local
+
+    # Try Groq for ambiguous messages (only if local found nothing)
+    groq_result = _groq_parse(message)
+    if groq_result and (groq_result.get("products") or groq_result.get("spend_orders") or groq_result.get("unknown")):
+        # Merge: prefer local intent, use groq's products
+        return {
+            "intent": groq_result.get("intent", local["intent"]),
+            "language": groq_result.get("language", local["language"]),
+            "products": groq_result.get("products", []),
+            "spend_orders": groq_result.get("spend_orders", []),
+            "unit_mismatch": groq_result.get("unit_mismatch", []),
+            "unknown": groq_result.get("unknown", []),
+            "_source": "groq",
+        }
+
     return local
 
 
 # ---------------------------------------------------------------
-# Responder
+# Reply generator
 # ---------------------------------------------------------------
 RESPONDER_PROMPT = """You are DukaanAI — a friendly kiryana shop assistant in Pakistan.
 
-CURRENCY: always "Rs.XXX" (never ₹ or $).
-LANGUAGE: reply in the customer's language.
+CURRENCY: always "Rs." (never ₹ or $).
+LANGUAGE: reply in the customer's language (English / Roman Urdu / Urdu).
 
 RULES:
-- Warm, brief, human. 1–5 sentences.
-- Use ONLY facts in data below. Never invent prices/stock/products.
-- Never mention AI/LLM.
+- Warm, brief. 1-4 sentences.
+- Use ONLY facts in data. Never invent prices/stock/products.
 - No emojis unless the customer used one.
 
-DATA SECTIONS:
-- "added_items": products added to draft (confirm briefly)
-- "spend_orders": amount-based requests (explain Rs.X = qty units at Rs.Y each)
-- "current_draft": running draft
-- "product" / "all_items": query context
-
-FACTUAL DATA:
+DATA:
 {data}
 
 Plain text only.
@@ -343,28 +439,74 @@ Plain text only.
 
 
 def generate_reply(customer_message: str, intent: str, data: dict, language: str) -> str:
+    # For simple cases, generate deterministic reply — no LLM needed
+    deterministic = _deterministic_reply(intent, data, language)
+    if deterministic:
+        return deterministic
+
     try:
         client = get_client()
         prompt = RESPONDER_PROMPT.replace("{data}", json.dumps(data, indent=2, ensure_ascii=False))
-        lang_hint = {
-            "en": "Reply in English. Currency: Rs.",
-            "ur_roman": "Reply in Roman Urdu. Currency: Rs.",
-            "ur": "Reply in Urdu script. Currency: Rs.",
-        }.get(language, "Reply in English. Currency: Rs.")
-
         resp = client.chat.completions.create(
             model="openai/gpt-oss-120b",
             messages=[
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": f"{lang_hint}\nCustomer: {customer_message}\nIntent: {intent}"},
+                {"role": "user", "content": f"{customer_message}\nIntent: {intent}"},
             ],
             temperature=0.4,
-            max_tokens=500,
+            max_tokens=400,
         )
         text = resp.choices[0].message.content.strip()
         return text.replace("₹", "Rs.").replace("$", "Rs.")
     except Exception:
         return _fallback_reply(intent, data, language)
+
+
+def _deterministic_reply(intent, data, language):
+    """Deterministic replies for common intents — no LLM needed."""
+    is_ur = language in ("ur_roman", "ur")
+
+    if intent == "greeting":
+        return "Assalam-o-Alaikum! Kya chahiye?" if is_ur else "Hi! How can I help you?"
+
+    if intent == "order_intent" and data.get("added_items"):
+        parts = [f"{a['qty']} {a['unit']} {a['name']}" for a in data["added_items"]]
+        total = data.get("draft_total", 0)
+        return (
+            f"Theek hai, add kar diya: {', '.join(parts)}. Total: Rs.{total:.2f}."
+            if is_ur else
+            f"Added: {', '.join(parts)}. Running total: Rs.{total:.2f}."
+        )
+
+    if intent == "spend_based_order":
+        orders = data.get("spend_orders", [])
+        if not orders:
+            return None
+        lines = []
+        for o in orders:
+            f = o.get("fulfilment")
+            if f == "fraction":
+                lines.append(
+                    f"Rs.{o['amount']} mein {o['computed_quantity']} {o['unit']} {o['product']} milega (Rs.{o['unit_price']}/{o['unit']})."
+                    if is_ur else
+                    f"Rs.{o['amount']} = {o['computed_quantity']} {o['unit']} of {o['product']} (Rs.{o['unit_price']}/{o['unit']})."
+                )
+            elif f == "full_units_with_leftover":
+                lines.append(
+                    f"Rs.{o['amount']} mein {o['full_units']} {o['unit']} {o['product']} (Rs.{o['unit_price']} each), Rs.{o['leftover']} bachega."
+                    if is_ur else
+                    f"Rs.{o['amount']} = {o['full_units']} {o['unit']} of {o['product']} (Rs.{o['unit_price']} each), Rs.{o['leftover']} leftover."
+                )
+            else:
+                lines.append(
+                    f"Rs.{o['amount']} mein ek {o['unit']} bhi nahi milta — Rs.{o['unit_price']} per {o['unit']} hai."
+                    if is_ur else
+                    f"Rs.{o['amount']} isn't enough for one {o['unit']} (Rs.{o['unit_price']}/{o['unit']})."
+                )
+        tail = " Confirm karein?" if is_ur else " Confirm?"
+        return " ".join(lines) + tail
+
+    return None
 
 
 def _fallback_reply(intent, data, language):
@@ -376,77 +518,28 @@ def _fallback_reply(intent, data, language):
     if intent == "spend_based_order":
         orders = data.get("spend_orders", [])
         if not orders:
-            return "Samajh nahi paya — dobara bata dein?" if is_ur else "Couldn't understand — please repeat."
-        lines = []
+            return "Samajh nahi paya." if is_ur else "Couldn't understand."
+        parts = []
         for o in orders:
-            f = o.get("fulfilment")
-            if f == "fraction":
-                lines.append(
-                    f"Rs.{o['amount']} mein {o['computed_quantity']} {o['unit']} "
-                    f"{o['product']} milega (Rs.{o['unit_price']}/{o['unit']})."
-                    if is_ur else
-                    f"Rs.{o['amount']} gets you {o['computed_quantity']} {o['unit']} of {o['product']}."
-                )
-            elif f == "full_units_with_leftover":
-                lines.append(
-                    f"Rs.{o['amount']} mein {o['full_units']} {o['unit']} {o['product']} "
-                    f"mil sakta hai, Rs.{o['leftover']} bachega."
-                    if is_ur else
-                    f"Rs.{o['amount']} → {o['full_units']} {o['unit']} of {o['product']}, Rs.{o['leftover']} leftover."
-                )
+            if o.get("fulfilment") == "fraction":
+                parts.append(f"Rs.{o['amount']} = {o['computed_quantity']} {o['unit']} {o['product']}")
             else:
-                lines.append(
-                    f"Rs.{o['amount']} mein ek {o['unit']} bhi nahi milta — ek {o['unit']} Rs.{o['unit_price']} hai."
-                    if is_ur else
-                    f"Rs.{o['amount']} isn't enough for one {o['unit']} (Rs.{o['unit_price']})."
-                )
-        return " ".join(lines) + (" Confirm karein?" if is_ur else " Shall I add this?")
-
-    if intent == "unit_mismatch":
-        m = data.get("mismatch", {})
-        return (
-            f"Maaf kijiye, {m.get('product')} {m.get('catalog_unit')} mein bikta hai."
-            if is_ur else
-            f"Sorry, {m.get('product')} is sold by {m.get('catalog_unit')}."
-        )
+                parts.append(f"Rs.{o['amount']} = {o['full_units']} {o['unit']} {o['product']}")
+        return " | ".join(parts)
 
     if intent == "inventory_query":
         items = data.get("all_items", [])
         if not items:
-            return "Abhi stock khali hai." if is_ur else "Currently the shop is empty."
-        lines = [f"- {it['name']}: Rs.{it['unit_price']}/{it['unit']} ({it['stock']} available)" for it in items]
-        header = "Yeh sab items available hain:" if is_ur else "These are all available items:"
+            return "Stock khali hai." if is_ur else "Shop is empty."
+        lines = [f"- {it['name']}: Rs.{it['unit_price']}/{it['unit']} ({it['stock']})" for it in items[:20]]
+        header = "Items available:" if not is_ur else "Items available:"
         return header + "\n" + "\n".join(lines)
 
-    if intent == "product_query" and data.get("product"):
-        p = data["product"]
-        return (
-            f"{p['name']} available hai — Rs.{p['unit_price']}/{p['unit']}, {p['stock']} bacha hai."
-            if is_ur else
-            f"{p['name']} is Rs.{p['unit_price']}/{p['unit']}, {p['stock']} in stock."
-        )
-
-    if intent == "price_query" and data.get("product"):
-        p = data["product"]
-        return (
-            f"{p['name']} Rs.{p['unit_price']}/{p['unit']} hai."
-            if is_ur else
-            f"{p['name']} is Rs.{p['unit_price']}/{p['unit']}."
-        )
-
     if intent == "order_intent" and data.get("added_items"):
-        names = ", ".join(f"{a['qty']} {a['unit']} {a['name']}" for a in data["added_items"])
-        total = data.get("draft_total", 0)
-        return (
-            f"Theek hai — {names}. Total: Rs.{total}."
-            if is_ur else
-            f"Added: {names}. Running total: Rs.{total}."
-        )
+        parts = [f"{a['qty']} {a['unit']} {a['name']}" for a in data["added_items"]]
+        return f"Added: {', '.join(parts)}."
 
-    if intent == "confirm":
-        return "Confirm karne ke liye neeche Confirm Order dabaiye." if is_ur else "Click Confirm Order below."
-
-    return "Dobara bata dein?" if is_ur else "Could you say that again?"
+    return "Dobara bata dein?" if is_ur else "Say that again?"
 
 
 def parse_order(message: str) -> dict:
