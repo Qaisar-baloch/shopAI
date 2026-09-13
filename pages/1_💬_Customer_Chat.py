@@ -227,37 +227,16 @@ if user_msg:
 
             # ---- Priority 2: spend-based order ----
             elif spend_orders:
-                # If any exceeds stock, report that
-                exceeded = [s for s in spend_orders if s["exceeds_stock"]]
-                if exceeded:
-                    bad = exceeded[0]
-                    data = {
-                        "mismatch": {
-                            "product": bad["product"],
-                            "unit": bad["unit"],
-                            "requested": bad["computed_quantity"],
-                            "stock": bad["stock_available"],
-                        }
-                    }
-                    reply = generate_reply(user_msg, "stock_exceeded", data, language)
-                else:
-                    # Auto-add all spend orders to draft
-                    for s in spend_orders:
-                        _add_to_draft([{
-                            "product": s["product"],
-                            "product_id": s["product_id"],
-                            "quantity": s["computed_quantity"],
-                            "unit": s["unit"],
-                            "unit_price": s["unit_price"],
-                        }])
-                    data = {
-                        "spend_orders": spend_orders,
-                        "draft_total": sum(
-                            d["quantity"] * d["unit_price"]
-                            for d in st.session_state.draft_items
-                        ),
-                    }
-                    reply = generate_reply(user_msg, "spend_based_order", data, language)
+                # Never auto-add. Always explain, then ask.
+                # Only add to draft if the customer confirms (next turn intent=confirm).
+                data = {"spend_orders": spend_orders}
+                reply = generate_reply(user_msg, "spend_based_order", data, language)
+                # Store pending spend orders for the next "confirm" turn
+                st.session_state["pending_spend_orders"] = [
+                    s for s in spend_orders
+                    if s.get("fulfilment") in ("fraction", "full_units_with_leftover")
+                    and not s.get("exceeds_stock")
+                ]
 
             # ---- Priority 3: quantity exceeds stock ----
             elif any(p.get("exceeds_stock") for p in products):
@@ -348,17 +327,16 @@ if user_msg:
                                            {"all_items": in_stock}, language)
 
             elif intent == "confirm":
-                reply = "Confirm karne ke liye neeche 'Confirm Order' button dabaiye. 🙂"
-            elif intent == "cancel":
-                st.session_state.draft_items = []
-                reply = generate_reply(user_msg, intent, {"note": "order cancelled"}, language)
-            else:
-                all_items = cached_full_inventory()
-                in_stock = [it for it in all_items if it["stock"] > 0]
-                reply = generate_reply(user_msg, "inventory_query",
-                                       {"all_items": in_stock}, language)
-
-            st.markdown(reply)
-            st.session_state.messages.append({"role": "assistant", "content": reply})
-            _trim_messages()
-            st.rerun()
+                # If we had pending spend orders, add them now
+                pending = st.session_state.get("pending_spend_orders", [])
+                if pending:
+                    for s in pending:
+                        _add_to_draft([{
+                            "product": s["product"],
+                            "product_id": s["product_id"],
+                            "quantity": s["computed_quantity"],
+                            "unit": s["unit"],
+                            "unit_price": s["unit_price"],
+                        }])
+                    st.session_state["pending_spend_orders"] = []
+                    reply =
