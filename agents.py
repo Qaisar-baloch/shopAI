@@ -75,6 +75,16 @@ ALIAS_HINTS = {
 }
 
 
+def _fmt_num(x):
+    """Format a number cleanly: 350.0 → '350', 0.29 → '0.29'."""
+    try:
+        if float(x).is_integer():
+            return str(int(x))
+    except (ValueError, TypeError):
+        pass
+    return f"{x:g}" if isinstance(x, (int, float)) else str(x)
+
+
 def _extract_sku_size(product_name):
     name = product_name.lower()
     m = re.search(
@@ -132,19 +142,24 @@ def _normalize_unit(unit):
 
 
 def _resolve_sku(product_fragment, requested_qty, user_unit):
+    """
+    Find the best matching SKU for a fragment + quantity + unit.
+    Considers ALL products whose name matches the fragment (not just the first).
+    """
     products = list_products()
     fragment = product_fragment.lower()
 
-    direct = find_product(product_fragment)
-    if direct and not any(c.isdigit() for c in fragment):
-        matches = [direct]
-    else:
-        matches = [p for p in products if fragment in p["name"].lower()]
+    # 1. Expand via alias ("aata" → "atta")
+    search_term = ALIAS_HINTS.get(fragment, fragment)
 
+    # 2. Build candidate list from ALL products whose name contains search_term
+    matches = [p for p in products if search_term in p["name"].lower()]
+
+    # 3. If empty, try direct find_product
     if not matches:
-        alias_target = ALIAS_HINTS.get(fragment)
-        if alias_target:
-            matches = [p for p in products if alias_target in p["name"].lower()]
+        direct = find_product(product_fragment)
+        if direct:
+            matches = [direct]
 
     if not matches:
         return None, None, None
@@ -157,6 +172,7 @@ def _resolve_sku(product_fragment, requested_qty, user_unit):
         else:
             target_base = requested_qty if (user_unit or "").lower() != "ml" else requested_qty / 1000.0
 
+        # Look for SKU whose size matches user's quantity
         best_exact = None
         for p in matches:
             size, base = _extract_sku_size(p["name"])
@@ -166,6 +182,7 @@ def _resolve_sku(product_fragment, requested_qty, user_unit):
         if best_exact:
             return best_exact, 1.0, f"{best_exact['name']}"
 
+        # No exact size — use smallest SKU, compute quantity
         smallest = None
         smallest_size = None
         for p in matches:
@@ -202,6 +219,7 @@ def _local_parse(message: str) -> dict:
     unknown = []
     seen_ids = set()
 
+    # ---------- Spend orders ----------
     spend_pattern = re.compile(
         r"(\d+)\s*(?:rs\.?|rupay[ae]?|pkr|rupees?|ka|ke|ki|of)\s+([a-z]+)",
         re.IGNORECASE,
@@ -217,6 +235,7 @@ def _local_parse(message: str) -> dict:
             frac = round(amount / up, 2)
             left = round(amount - full * up, 2)
             is_div = real["unit"].lower() in DIVISIBLE_UNITS
+            fulfilment = "fraction" if is_div else ("full_units_with_leftover" if full >= 1 else "insufficient")
             spend_orders.append({
                 "product": real["name"],
                 "product_id": real["id"],
@@ -224,13 +243,14 @@ def _local_parse(message: str) -> dict:
                 "unit": real["unit"],
                 "unit_price": up,
                 "computed_quantity": frac if is_div else full,
-                "fulfilment": "fraction" if is_div else ("full_units_with_leftover" if full >= 1 else "insufficient"),
+                "fulfilment": fulfilment,
                 "full_units": full,
                 "leftover": left,
                 "stock_available": float(real["current_stock"]),
                 "exceeds_stock": (frac if is_div else full) > float(real["current_stock"]),
             })
 
+    # ---------- Quantity orders ----------
     FRACTIONS = {"half": 0.5, "aadha": 0.5, "adha": 0.5, "quarter": 0.25, "pao": 0.25}
     qty_pattern = re.compile(
         r"(\d+(?:\.\d+)?|half|aadha|adha|quarter|pao)\s*"
@@ -269,13 +289,14 @@ def _local_parse(message: str) -> dict:
                 "note": note,
             })
 
+    # ---------- Bare product name fallback ----------
     if not products and not spend_orders:
         stopwords = {
             "the", "and", "for", "with", "have", "want", "need", "please",
             "give", "some", "hai", "kya", "ka", "ke", "ki", "aur", "chahiye",
             "dedo", "hain", "mein", "se", "par", "salam", "salaam", "assalam",
             "assalamu", "asalam", "alaikum", "allaikum", "u", "o", "aliakum",
-            "hello", "hi", "hey", "aoaa",
+            "hello", "hi", "hey", "aoaa", "kia", "bol", "rahe", "ho", "kyun",
         }
         for w in re.findall(r"\b([a-z]{3,})\b", msg):
             if w in stopwords:
@@ -295,30 +316,37 @@ def _local_parse(message: str) -> dict:
                 })
                 break
 
-    # ---- Intent inference ----
+    # ---------- Intent inference ----------
     greeting_words = ("salam", "salaam", "assalam", "assalamu", "asalam", "aoaa",
                       "hello", "hi", "hey")
+    inventory_phrases = (
+        "stock", "inventory", "kya kya", "kia kia", "kia kya", "kya kia",
+        "kia kiya", "kya kiya", "aur kia", "aur kya", "sab kuch",
+        "show me", "list all", "menu", "dikhao", "dikha do", "available items",
+        "what do you have", "what have you got",
+    )
+
     if products or spend_orders:
         intent = "spend_based_order" if (spend_orders and not products) else "order_intent"
     elif any(w in msg for w in greeting_words) and len(msg.split()) <= 5:
         intent = "greeting"
-    elif any(w in msg for w in ("stock", "inventory", "kya kya", "show me", "list", "menu", "dikhao")):
+    elif any(p in msg for p in inventory_phrases):
         intent = "inventory_query"
     elif any(w in msg for w in ("yes", "haan", "ok", "confirm", "theek")):
         intent = "confirm"
     elif any(w in msg for w in ("no", "nahi", "cancel", "chhoro")):
         intent = "cancel"
-    elif any(w in msg for w in ("available", "kitne", "rate", "price", "how much", "kya hai")):
+    elif any(w in msg for w in ("available", "kitne", "rate", "price", "how much")):
         intent = "product_query"
     else:
         intent = "other"
 
-    # ---- Language detection ----
+    # ---------- Language detection ----------
     ur_words = (
-        "hai", "kya", "ka", "ke", "ki", "aur", "chahiye", "dedo", "hain",
+        "hai", "kya", "kia", "ka", "ke", "ki", "aur", "chahiye", "dedo", "hain",
         "mein", "kaisa", "salam", "salaam", "assalam", "assalamu", "asalam",
         "alaikum", "allaikum", "aliakum", "bhai", "aap", "tum", "mujhe", "aapko",
-        "do", "de", "dena", "lena", "kro", "karo",
+        "do", "de", "dena", "lena", "kro", "karo", "bol", "rahe",
     )
     language = "ur_roman" if any(w in msg for w in ur_words) else "en"
 
@@ -425,12 +453,12 @@ def _deterministic_reply(intent, data, language):
         return "Walaikum assalam! Kya chahiye?" if is_ur else "Hi! How can I help you?"
 
     if intent == "order_intent" and data.get("added_items"):
-        parts = [f"{a['qty']} {a['unit']} {a['name']}" for a in data["added_items"]]
+        parts = [f"{_fmt_num(a['qty'])} {a['unit']} {a['name']}" for a in data["added_items"]]
         total = data.get("draft_total", 0)
         return (
-            f"Theek hai, add kar diya: {', '.join(parts)}. Total: Rs.{total:.2f}."
+            f"Theek hai, add kar diya: {', '.join(parts)}. Total: Rs.{_fmt_num(total)}."
             if is_ur else
-            f"Added: {', '.join(parts)}. Running total: Rs.{total:.2f}."
+            f"Added: {', '.join(parts)}. Running total: Rs.{_fmt_num(total)}."
         )
 
     if intent == "spend_based_order":
@@ -438,28 +466,39 @@ def _deterministic_reply(intent, data, language):
         if not orders:
             return None
         lines = []
+        any_actionable = False
         for o in orders:
             f = o.get("fulfilment")
+            amount = _fmt_num(o["amount"])
+            price = _fmt_num(o["unit_price"])
             if f == "fraction":
+                any_actionable = True
                 lines.append(
-                    f"Rs.{o['amount']} mein {o['computed_quantity']} {o['unit']} {o['product']} milega (Rs.{o['unit_price']}/{o['unit']})."
+                    f"Rs.{amount} mein {_fmt_num(o['computed_quantity'])} {o['unit']} "
+                    f"{o['product']} milega (Rs.{price}/{o['unit']})."
                     if is_ur else
-                    f"Rs.{o['amount']} = {o['computed_quantity']} {o['unit']} of {o['product']} (Rs.{o['unit_price']}/{o['unit']})."
+                    f"Rs.{amount} = {_fmt_num(o['computed_quantity'])} {o['unit']} of "
+                    f"{o['product']} (Rs.{price}/{o['unit']})."
                 )
             elif f == "full_units_with_leftover":
+                any_actionable = True
                 lines.append(
-                    f"Rs.{o['amount']} mein {o['full_units']} {o['unit']} {o['product']} (Rs.{o['unit_price']} each), Rs.{o['leftover']} bachega."
+                    f"Rs.{amount} mein {_fmt_num(o['full_units'])} {o['unit']} "
+                    f"{o['product']} (Rs.{price} each), Rs.{_fmt_num(o['leftover'])} bachega."
                     if is_ur else
-                    f"Rs.{o['amount']} = {o['full_units']} {o['unit']} of {o['product']} (Rs.{o['unit_price']} each), Rs.{o['leftover']} leftover."
+                    f"Rs.{amount} = {_fmt_num(o['full_units'])} {o['unit']} of "
+                    f"{o['product']} (Rs.{price} each), Rs.{_fmt_num(o['leftover'])} leftover."
                 )
-            else:
+            else:  # insufficient
                 lines.append(
-                    f"Rs.{o['amount']} mein ek {o['unit']} bhi nahi milta — Rs.{o['unit_price']} per {o['unit']} hai."
+                    f"Rs.{amount} mein ek {o['unit']} bhi nahi milta — ek {o['unit']} Rs.{price} hai."
                     if is_ur else
-                    f"Rs.{o['amount']} isn't enough for one {o['unit']} (Rs.{o['unit_price']}/{o['unit']})."
+                    f"Rs.{amount} isn't enough for one {o['unit']} — one {o['unit']} costs Rs.{price}."
                 )
-        tail = " Confirm karein?" if is_ur else " Confirm?"
-        return " ".join(lines) + tail
+        if any_actionable:
+            tail = " Confirm karein?" if is_ur else " Confirm?"
+            return " ".join(lines) + tail
+        return " ".join(lines)
 
     return None
 
@@ -477,23 +516,31 @@ def _fallback_reply(intent, data, language):
         parts = []
         for o in orders:
             if o.get("fulfilment") == "fraction":
-                parts.append(f"Rs.{o['amount']} = {o['computed_quantity']} {o['unit']} {o['product']}")
+                parts.append(f"Rs.{_fmt_num(o['amount'])} = {_fmt_num(o['computed_quantity'])} {o['unit']} {o['product']}")
+            elif o.get("fulfilment") == "full_units_with_leftover":
+                parts.append(f"Rs.{_fmt_num(o['amount'])} = {_fmt_num(o['full_units'])} {o['unit']} {o['product']}")
             else:
-                parts.append(f"Rs.{o['amount']} = {o['full_units']} {o['unit']} {o['product']}")
+                parts.append(f"Rs.{_fmt_num(o['amount'])} insufficient for {o['product']}")
         return " | ".join(parts)
 
     if intent == "inventory_query":
         items = data.get("all_items", [])
         if not items:
             return "Stock khali hai." if is_ur else "Shop is empty."
-        lines = [f"- {it['name']}: Rs.{it['unit_price']}/{it['unit']} ({it['stock']})" for it in items[:20]]
-        return "Items available:\n" + "\n".join(lines)
+        lines = [
+            f"- {it['name']}: Rs.{_fmt_num(it['unit_price'])}/{it['unit']} "
+            f"({_fmt_num(it['stock'])} available)"
+            for it in items[:20]
+        ]
+        header = "Yeh items available hain:" if is_ur else "Items available:"
+        return header + "\n" + "\n".join(lines)
 
     if intent == "order_intent" and data.get("added_items"):
-        parts = [f"{a['qty']} {a['unit']} {a['name']}" for a in data["added_items"]]
+        parts = [f"{_fmt_num(a['qty'])} {a['unit']} {a['name']}" for a in data["added_items"]]
         return f"Added: {', '.join(parts)}."
 
-    return "Dobara bata dein?" if is_ur else "Say that again?"
+    return "Dobara bata dein? Jaise: '2kg atta' ya '100 ka tel'." if is_ur \
+           else "Say that again? Like: '2kg atta' or '100 ka tel'."
 
 
 def parse_order(message: str) -> dict:
