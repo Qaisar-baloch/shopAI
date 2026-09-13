@@ -41,10 +41,10 @@ def get_client():
     return Groq(api_key=api_key)
 
 
-# ---------------------------------------------------------------
-# Divisible vs indivisible units
-# ---------------------------------------------------------------
-DIVISIBLE_UNITS = {"kg", "gram", "litre", "ml"}
+# Units you can physically split (accept fractional spend orders)
+DIVISIBLE_UNITS = {"kg", "gram", "litre", "ml", "g"}
+
+# Units that come in discrete packs (must be whole numbers)
 INDIVISIBLE_UNITS = {"piece", "dozen", "bag", "pack", "bottle", "packet"}
 
 
@@ -62,9 +62,6 @@ def get_product_catalog():
     ]
 
 
-# ---------------------------------------------------------------
-# Classifier prompt — v2
-# ---------------------------------------------------------------
 CLASSIFIER_PROMPT = """You are the intent classifier for DukaanAI, an AI shop assistant.
 
 Currency is ALWAYS "Rs." — never ₹, $, or any other symbol.
@@ -80,9 +77,13 @@ Classify into EXACTLY ONE intent:
 - "cancel"             → no, nahi, cancel, chhoro
 - "other"              → anything else
 
+IMPORTANT: A single message CAN have both regular products AND spend-based items.
+Return BOTH lists populated in that case.
+
 CRITICAL RULES:
 
-1. EXTRACT ALL items from a message. "2kg atta, 3 eggs, half milk" → 3 items.
+1. Extract ALL items. "2kg atta, 3 eggs, half milk" → 3 regular products.
+   "2kg atta aur 100 ka tel" → 1 regular product + 1 spend order.
 
 2. UNIT MATCHING: only use the catalog's unit. If the customer uses a
    different unit → put in "unit_mismatch". Never auto-convert.
@@ -90,7 +91,7 @@ CRITICAL RULES:
 3. FRACTIONS: "half milk" → 0.5, "aadha kg chawal" → 0.5, "1.5 kg sugar" → 1.5.
 
 4. SPEND-BASED: "100 ka tel" → spend_orders with product + amount (100).
-   The customer's amount is in rupees.
+   The customer's amount is in rupees. Combine with regular products if present.
 
 5. UNKNOWN PRODUCTS: any product NOT in the catalog → "unknown". Never invent.
 
@@ -104,21 +105,21 @@ OUTPUT (strict JSON):
   "intent": "order_intent",
   "language": "ur_roman",
   "products": [{{"product": "Atta 5kg", "quantity": 2, "unit": "bag"}}],
-  "spend_orders": [],
+  "spend_orders": [{{"product": "Cooking Oil 1L", "amount": 100, "unit": "currency"}}],
   "unit_mismatch": [],
   "unknown": []
 }}
 
 EXAMPLES:
-"hi"                              → {{"intent":"greeting","language":"en","products":[],"spend_orders":[],"unit_mismatch":[],"unknown":[]}}
-"doodh available hai?"            → {{"intent":"product_query","language":"ur_roman","products":[{{"product":"Milk 1L","quantity":0,"unit":"piece"}}],"spend_orders":[],"unit_mismatch":[],"unknown":[]}}
-"2kg atta, 3 eggs, half milk"     → {{"intent":"order_intent","language":"ur_roman","products":[{{"product":"Atta 5kg","quantity":2,"unit":"bag"}},{{"product":"Eggs 12 pcs","quantity":3,"unit":"dozen"}},{{"product":"Milk 1L","quantity":0.5,"unit":"piece"}}],"spend_orders":[],"unit_mismatch":[],"unknown":[]}}
-"100 pkr ka cooking oil"          → {{"intent":"spend_based_order","language":"ur_roman","products":[],"spend_orders":[{{"product":"Cooking Oil 1L","amount":100,"unit":"currency"}}],"unit_mismatch":[],"unknown":[]}}
-"200 ke eggs dedo"                → {{"intent":"spend_based_order","language":"ur_roman","products":[],"spend_orders":[{{"product":"Eggs 12 pcs","amount":200,"unit":"currency"}}],"unit_mismatch":[],"unknown":[]}}
-"50 ka aata aur 100 ka chawal"    → {{"intent":"spend_based_order","language":"ur_roman","products":[],"spend_orders":[{{"product":"Atta 5kg","amount":50,"unit":"currency"}},{{"product":"Basmati Rice 2kg","amount":100,"unit":"currency"}}],"unit_mismatch":[],"unknown":[]}}
-"2 kg tea"                        → {{"intent":"order_intent","language":"en","products":[],"spend_orders":[],"unit_mismatch":[{{"product":"Tapal Tea 950g","customer_said_unit":"kg","catalog_unit":"pack"}}],"unknown":[]}}
-"1 pizza"                         → {{"intent":"order_intent","language":"en","products":[],"spend_orders":[],"unit_mismatch":[],"unknown":["pizza"]}}
-"stock me kia kia hai?"           → {{"intent":"inventory_query","language":"ur_roman","products":[],"spend_orders":[],"unit_mismatch":[],"unknown":[]}}
+"hi"                                    → {{"intent":"greeting","language":"en","products":[],"spend_orders":[],"unit_mismatch":[],"unknown":[]}}
+"doodh available hai?"                  → {{"intent":"product_query","language":"ur_roman","products":[{{"product":"Milk 1L","quantity":0,"unit":"piece"}}],"spend_orders":[],"unit_mismatch":[],"unknown":[]}}
+"2kg atta, 3 eggs, half milk"           → {{"intent":"order_intent","language":"ur_roman","products":[{{"product":"Atta 5kg","quantity":2,"unit":"bag"}},{{"product":"Eggs 12 pcs","quantity":3,"unit":"dozen"}},{{"product":"Milk 1L","quantity":0.5,"unit":"piece"}}],"spend_orders":[],"unit_mismatch":[],"unknown":[]}}
+"2 kg atta aur 100 ka tel"              → {{"intent":"order_intent","language":"ur_roman","products":[{{"product":"Atta 5kg","quantity":2,"unit":"bag"}}],"spend_orders":[{{"product":"Cooking Oil 1L","amount":100,"unit":"currency"}}],"unit_mismatch":[],"unknown":[]}}
+"200 ke eggs dedo"                      → {{"intent":"spend_based_order","language":"ur_roman","products":[],"spend_orders":[{{"product":"Eggs 12 pcs","amount":200,"unit":"currency"}}],"unit_mismatch":[],"unknown":[]}}
+"100 ka tel"                            → {{"intent":"spend_based_order","language":"ur_roman","products":[],"spend_orders":[{{"product":"Cooking Oil 1L","amount":100,"unit":"currency"}}],"unit_mismatch":[],"unknown":[]}}
+"2 kg tea"                              → {{"intent":"order_intent","language":"en","products":[],"spend_orders":[],"unit_mismatch":[{{"product":"Tapal Tea 950g","customer_said_unit":"kg","catalog_unit":"pack"}}],"unknown":[]}}
+"1 pizza"                               → {{"intent":"order_intent","language":"en","products":[],"spend_orders":[],"unit_mismatch":[],"unknown":["pizza"]}}
+"stock me kia kia hai?"                 → {{"intent":"inventory_query","language":"ur_roman","products":[],"spend_orders":[],"unit_mismatch":[],"unknown":[]}}
 """
 
 
@@ -136,10 +137,11 @@ def classify_message(message: str) -> dict:
             ],
             response_format={"type": "json_object"},
             temperature=0.1,
-            max_tokens=800,
+            max_tokens=900,
         )
         parsed = json.loads(resp.choices[0].message.content)
 
+        # ---- Regular products ----
         validated = []
         unknown = list(parsed.get("unknown", []))
         for item in parsed.get("products", []):
@@ -158,7 +160,7 @@ def classify_message(message: str) -> dict:
             else:
                 unknown.append(item.get("product"))
 
-        # ---- Validate spend orders with indivisible-unit logic ----
+        # ---- Spend orders with smart fulfilment ----
         validated_spend = []
         for so in parsed.get("spend_orders", []):
             real = find_product(so.get("product", ""))
@@ -170,15 +172,14 @@ def classify_message(message: str) -> dict:
 
             unit_price = float(real["unit_price"])
             unit = real["unit"]
+            fractional_qty = round(amount / unit_price, 3)
             full_units = int(amount // unit_price) if unit_price > 0 else 0
             leftover = round(amount - full_units * unit_price, 2)
-            fractional_qty = round(amount / unit_price, 2)
 
             is_divisible = unit.lower() in DIVISIBLE_UNITS
 
-            # ---- Decide how to fulfil ----
             if is_divisible:
-                # fraction is fine — just offer fractional_qty
+                # Fraction is fine — offer the computed quantity
                 validated_spend.append({
                     "product": real["name"],
                     "product_id": real["id"],
@@ -193,7 +194,6 @@ def classify_message(message: str) -> dict:
                     "exceeds_stock": fractional_qty > float(real["current_stock"]),
                 })
             else:
-                # indivisible — need full units
                 if full_units >= 1:
                     validated_spend.append({
                         "product": real["name"],
@@ -209,7 +209,6 @@ def classify_message(message: str) -> dict:
                         "exceeds_stock": full_units > float(real["current_stock"]),
                     })
                 else:
-                    # amount < one unit price
                     validated_spend.append({
                         "product": real["name"],
                         "product_id": real["id"],
@@ -245,41 +244,37 @@ def classify_message(message: str) -> dict:
         }
 
 
-# ---------------------------------------------------------------
-# Responder prompt — v2
-# ---------------------------------------------------------------
 RESPONDER_PROMPT = """You are DukaanAI — a friendly shopkeeper's assistant at a small neighbourhood store in Pakistan.
 
 CURRENCY: Always write prices as "Rs.XXX" — never ₹, $, or any other symbol.
 
-LANGUAGE RULES:
-1. Reply in the SAME language as the customer (English → English, Roman Urdu → Roman Urdu, Urdu → Urdu).
+LANGUAGE: Reply in the same language as the customer.
 
-STYLE RULES:
-2. Warm, brief, human. 1–5 short sentences.
-3. Use ONLY the facts in the data below. NEVER invent prices, stock, product names, or quantities.
-4. NEVER say "I don't have information" if data is provided.
-5. NEVER mention AI / LLM.
-6. No emojis unless the customer used one.
+STYLE:
+- Warm, brief, human. 1–6 short sentences.
+- Use ONLY facts in the data. NEVER invent prices, stock, or quantities.
+- NEVER mention AI / LLM.
+- No emojis unless the customer used one.
 
-SPEND-BASED ORDER RULES (CRITICAL):
-7. When the customer's spend order has "fulfilment": "fraction":
-   - Say: "Rs.X mein aap ko [quantity] [unit] [product] milega (Rs.Y/[unit])."
-   - Ask to confirm.
+You may receive up to FOUR sections of data:
+  A. "added_items"     — regular products that were just added to the draft
+  B. "spend_orders"    — spend-based requests that need explanation/confirmation
+  C. "current_draft"   — running draft total
+  D. "product"/"all_items" — single-product or full-inventory query context
 
-8. When fulfilment is "full_units_with_leftover":
-   - Say: "Rs.X mein [N] [unit] [product] mil sakta hai. Yeh Rs.Z hoga, aur Rs.L bacha rahega."
-   - Ask: "Kya aap yeh [N] [unit] lena chahenge?"
-
-9. When fulfilment is "insufficient":
-   - Say: "Rs.X mein ek [unit] bhi nahi milta — ek [unit] ki keemat Rs.Y hai. Kitna lena chahenge?"
-
-10. If "exceeds_stock" is true: say only stock number available and ask if they want that much.
+RULES:
+1. If "added_items" present → briefly confirm what was added.
+2. If "spend_orders" present → for each:
+   - fulfilment "fraction": "Rs.X mein [qty] [unit] [product] milega (Rs.Y/[unit])."
+   - fulfilment "full_units_with_leftover": "Rs.X mein [N] [unit] mil sakta hai, Rs.L bachega."
+   - fulfilment "insufficient": "Rs.X mein ek [unit] bhi nahi milta — ek [unit] Rs.Y hai."
+3. If BOTH A and B present → confirm A briefly, then explain B, then ask "Confirm karein?"
+4. If "current_draft" present → mention the running total.
 
 FACTUAL DATA (authoritative — quote exactly, use Rs.):
 {data}
 
-Output plain text only. No JSON.
+Output plain text only.
 """
 
 
@@ -303,10 +298,9 @@ def generate_reply(customer_message: str, intent: str, data: dict, language: str
                 },
             ],
             temperature=0.4,
-            max_tokens=600,
+            max_tokens=700,
         )
         text = resp.choices[0].message.content.strip()
-        # Safety net: replace ₹ and $ with Rs. in case the LLM slipped
         text = text.replace("₹", "Rs.").replace("$", "Rs.")
         return text
     except Exception:
@@ -341,7 +335,7 @@ def _fallback_reply(intent, data, language):
                 if is_ur:
                     lines.append(
                         f"Rs.{o['amount']} mein {o['full_units']} {o['unit']} {o['product']} "
-                        f"mil sakta hai (Rs.{o['unit_price']}/{o['unit']}). Rs.{o['leftover']} bacha rahega."
+                        f"mil sakta hai (Rs.{o['unit_price']}/{o['unit']}). Rs.{o['leftover']} bachega."
                     )
                 else:
                     lines.append(
