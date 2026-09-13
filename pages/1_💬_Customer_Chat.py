@@ -270,4 +270,79 @@ if user_msg:
                     ],
                     "draft_total": sum(
                         d["quantity"] * d["unit_price"]
-                        for d
+                        for d in st.session_state.draft_items
+                    ),
+                }
+                reply = generate_reply(user_msg, intent, data, language)
+
+            # ---- P4: greeting ----
+            elif intent == "greeting":
+                reply = generate_reply(user_msg, intent, {"note": "customer greeted"}, language)
+
+            # ---- P5: inventory query ----
+            elif intent == "inventory_query":
+                all_items = cached_full_inventory()
+                in_stock = [it for it in all_items if it["stock"] > 0]
+                data = {
+                    "query_type": "full_inventory",
+                    "all_items": in_stock,
+                    "total_products": len(all_items),
+                    "in_stock_count": len(in_stock),
+                }
+                reply = generate_reply(user_msg, intent, data, language)
+
+            # ---- P6: single product query ----
+            elif intent in ("product_query", "price_query"):
+                all_items = cached_full_inventory()
+                in_stock = [it for it in all_items if it["stock"] > 0]
+                reply = generate_reply(user_msg, "inventory_query",
+                                       {"all_items": in_stock}, language)
+
+            # ---- P7: confirm ----
+            elif intent == "confirm":
+                pending = st.session_state.get("pending_spend_orders", [])
+                if pending:
+                    for s in pending:
+                        _add_to_draft([{
+                            "product": s["product"],
+                            "product_id": s["product_id"],
+                            "quantity": s["computed_quantity"],
+                            "unit": s["unit"],
+                            "unit_price": s["unit_price"],
+                        }])
+                    st.session_state.pending_spend_orders = []
+                    reply = "Theek hai, add kar diya. Neeche Confirm Order button dabaiye."
+                else:
+                    reply = "Confirm karne ke liye neeche 'Confirm Order' button dabaiye. 🙂"
+
+            # ---- P8: cancel ----
+            elif intent == "cancel":
+                st.session_state.draft_items = []
+                st.session_state.pending_spend_orders = []
+                reply = generate_reply(user_msg, intent, {"note": "order cancelled"}, language)
+
+            # ---- P9: FALLBACK - never silent ----
+            else:
+                all_items = cached_full_inventory()
+                in_stock = [it for it in all_items if it["stock"] > 0]
+                unknown = parsed.get("unknown", [])
+                if unknown:
+                    reply = (
+                        f"Sorry, ye products catalog mein nahi hain: {', '.join(unknown)}. "
+                        f"Aap ye available items try kar sakte hain."
+                    )
+                else:
+                    reply = generate_reply(user_msg, "inventory_query",
+                                           {"all_items": in_stock}, language)
+
+            # ---- Final safety: never empty ----
+            if not reply or not reply.strip():
+                reply = (
+                    "Main samajh nahi paya — dobara likh dein? "
+                    "Jaise: '2kg atta, 1 dozen eggs' ya 'stock me kia hai'."
+                )
+
+            st.markdown(reply)
+            st.session_state.messages.append({"role": "assistant", "content": reply})
+            _trim_messages()
+            st.rerun()
