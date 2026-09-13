@@ -1,12 +1,8 @@
 import re as _re
 import streamlit as st
 from db import (
-    init_db,
-    recent_orders,
-    low_stock_products,
-    find_product,
-    get_product_by_id,
-    list_products,
+    init_db, recent_orders, low_stock_products,
+    find_product, get_product_by_id, list_products,
 )
 from agents import classify_message, generate_reply
 from inventory import build_order_summary, execute_order
@@ -54,17 +50,11 @@ def _trim_messages():
 
 
 def _base_name(product_name):
-    """'Atta 5kg' → 'atta'; 'Milk 1L' → 'milk'; 'Cooking Oil 1L' → 'cooking oil'."""
     cleaned = _re.sub(r"\s*\d+.*$", "", product_name).strip().lower()
     return cleaned or product_name.lower().split()[0]
 
 
 def _add_to_draft(products):
-    """
-    Replace-by-base-name semantics.
-    'Atta 5kg' and 'Atta 10kg' share base 'atta' — adding one removes the other.
-    Real shopkeeper behavior: '10kg atta' after '2kg atta' = update, not accumulate.
-    """
     for p in products:
         if p["quantity"] <= 0:
             continue
@@ -74,10 +64,8 @@ def _add_to_draft(products):
             if _base_name(d["product"]) != base
         ]
         st.session_state.draft_items.append({
-            "product": p["product"],
-            "product_id": p["product_id"],
-            "quantity": p["quantity"],
-            "unit": p["unit"],
+            "product": p["product"], "product_id": p["product_id"],
+            "quantity": p["quantity"], "unit": p["unit"],
             "unit_price": p["unit_price"],
         })
 
@@ -95,7 +83,7 @@ def _draft_summary():
 page_header(
     "A better way to take orders",
     "CUSTOMER AI DESK",
-    'Try: "2kg atta, 1 dozen eggs" or "Is 2 milk available?"',
+    'Try: "5kg atta" or "1 dozen eggs". The AI will ask if a unit is unclear.',
 )
 
 
@@ -191,6 +179,7 @@ if user_msg:
             intent = parsed.get("intent", "other")
             language = parsed.get("language", "en")
             products = parsed.get("products", [])
+            ambiguous = parsed.get("ambiguous", [])
             spend_orders = parsed.get("spend_orders", [])
             mismatches = parsed.get("unit_mismatch", [])
 
@@ -213,8 +202,8 @@ if user_msg:
                     f"Aap ne {bad['quantity']} maanga. Kitna lena chahenge?"
                 )
 
-            # P3: products or spend orders
-            elif products or spend_orders:
+            # P3: products and/or spend orders and/or ambiguous
+            elif products or spend_orders or ambiguous:
                 added_items_payload = []
                 if products:
                     _add_to_draft(products)
@@ -231,6 +220,7 @@ if user_msg:
                 data = {
                     "added_items": added_items_payload,
                     "spend_orders": spend_orders,
+                    "ambiguous": ambiguous,
                     "draft_total": sum(d["quantity"] * d["unit_price"] for d in st.session_state.draft_items),
                 }
                 reply = generate_reply(user_msg, intent, data, language)
@@ -273,14 +263,14 @@ if user_msg:
                     reply = f"Ye products nahi hain: {', '.join(unknown)}. Try: atta, chawal, doodh, anday, cheeni, tel."
                 else:
                     reply = (
-                        "Main samajh nahi paya. Aap ye try karein:\n"
-                        "- Order: '2kg atta, 1 dozen eggs'\n"
+                        "Main samajh nahi paya. Try:\n"
+                        "- Order: '5kg atta, 1 dozen eggs'\n"
                         "- Price: 'atta ka rate'\n"
                         "- Stock: 'stock me kia hai'"
                     )
 
             if not reply or not reply.strip():
-                reply = "Dobara likh dein? Jaise: '2kg atta'."
+                reply = "Dobara likh dein? Jaise: '5kg atta'."
 
             st.markdown(reply)
             st.session_state.messages.append({"role": "assistant", "content": reply})
