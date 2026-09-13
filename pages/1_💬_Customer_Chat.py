@@ -1,3 +1,4 @@
+import re as _re
 import streamlit as st
 from db import (
     init_db,
@@ -52,34 +53,33 @@ def _trim_messages():
         st.session_state.messages = st.session_state.messages[-40:]
 
 
-def _should_replace_draft(new_products, current_draft):
-    """
-    True if the new message mentions ALL products already in the draft
-    → treat as re-statement, replace the draft entirely.
-    """
-    if not current_draft or not new_products:
-        return False
-    draft_ids = {d["product_id"] for d in current_draft}
-    new_ids = {p["product_id"] for p in new_products}
-    return draft_ids.issubset(new_ids)
+def _base_name(product_name):
+    """'Atta 5kg' → 'atta'; 'Milk 1L' → 'milk'; 'Cooking Oil 1L' → 'cooking oil'."""
+    cleaned = _re.sub(r"\s*\d+.*$", "", product_name).strip().lower()
+    return cleaned or product_name.lower().split()[0]
 
 
 def _add_to_draft(products):
+    """
+    Replace-by-base-name semantics.
+    'Atta 5kg' and 'Atta 10kg' share base 'atta' — adding one removes the other.
+    Real shopkeeper behavior: '10kg atta' after '2kg atta' = update, not accumulate.
+    """
     for p in products:
         if p["quantity"] <= 0:
             continue
-        existing = next(
-            (d for d in st.session_state.draft_items if d["product_id"] == p["product_id"]),
-            None,
-        )
-        if existing:
-            existing["quantity"] += p["quantity"]
-        else:
-            st.session_state.draft_items.append({
-                "product": p["product"], "product_id": p["product_id"],
-                "quantity": p["quantity"], "unit": p["unit"],
-                "unit_price": p["unit_price"],
-            })
+        base = _base_name(p["product"])
+        st.session_state.draft_items = [
+            d for d in st.session_state.draft_items
+            if _base_name(d["product"]) != base
+        ]
+        st.session_state.draft_items.append({
+            "product": p["product"],
+            "product_id": p["product_id"],
+            "quantity": p["quantity"],
+            "unit": p["unit"],
+            "unit_price": p["unit_price"],
+        })
 
 
 def _draft_summary():
@@ -166,6 +166,7 @@ if st.session_state.draft_items:
     with c_b:
         if st.button("🗑️ Clear Draft", use_container_width=True):
             st.session_state.draft_items = []
+            st.session_state.pending_spend_orders = []
             st.session_state.messages.append({"role": "assistant", "content": "Draft clear."})
             _trim_messages()
             st.rerun()
@@ -214,10 +215,6 @@ if user_msg:
 
             # P3: products or spend orders
             elif products or spend_orders:
-                # ---- RESTATEMENT DETECTION ----
-                if products and _should_replace_draft(products, st.session_state.draft_items):
-                    st.session_state.draft_items = []
-
                 added_items_payload = []
                 if products:
                     _add_to_draft(products)
@@ -275,7 +272,12 @@ if user_msg:
                 if unknown:
                     reply = f"Ye products nahi hain: {', '.join(unknown)}. Try: atta, chawal, doodh, anday, cheeni, tel."
                 else:
-                    reply = "Try: '2kg atta, 1 dozen eggs' ya '100 ka tel'."
+                    reply = (
+                        "Main samajh nahi paya. Aap ye try karein:\n"
+                        "- Order: '2kg atta, 1 dozen eggs'\n"
+                        "- Price: 'atta ka rate'\n"
+                        "- Stock: 'stock me kia hai'"
+                    )
 
             if not reply or not reply.strip():
                 reply = "Dobara likh dein? Jaise: '2kg atta'."
