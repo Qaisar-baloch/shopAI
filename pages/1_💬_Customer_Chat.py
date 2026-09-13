@@ -30,12 +30,9 @@ def cached_low_stock():
 @st.cache_data(ttl=30)
 def cached_full_inventory():
     return [
-        {
-            "name": p["name"],
-            "unit": p["unit"],
-            "unit_price": float(p["unit_price"]),
-            "stock": float(p["current_stock"]),
-        }
+        {"name": p["name"], "unit": p["unit"],
+         "unit_price": float(p["unit_price"]),
+         "stock": float(p["current_stock"])}
         for p in list_products()
     ]
 
@@ -67,23 +64,17 @@ def _add_to_draft(products):
             existing["quantity"] += p["quantity"]
         else:
             st.session_state.draft_items.append({
-                "product": p["product"],
-                "product_id": p["product_id"],
-                "quantity": p["quantity"],
-                "unit": p["unit"],
+                "product": p["product"], "product_id": p["product_id"],
+                "quantity": p["quantity"], "unit": p["unit"],
                 "unit_price": p["unit_price"],
             })
 
 
 def _draft_summary():
     items_with_ids = [
-        {
-            "product": d["product"],
-            "product_id": d["product_id"],
-            "quantity": d["quantity"],
-            "unit": d["unit"],
-            "unit_price": d["unit_price"],
-        }
+        {"product": d["product"], "product_id": d["product_id"],
+         "quantity": d["quantity"], "unit": d["unit"],
+         "unit_price": d["unit_price"]}
         for d in st.session_state.draft_items
     ]
     return build_order_summary(items_with_ids)
@@ -100,12 +91,11 @@ with st.sidebar:
     st.header("📋 Recent Orders")
     orders = cached_recent_orders(8)
     if not orders:
-        st.caption("No orders yet. Try placing one!")
+        st.caption("No orders yet.")
     else:
         for o in orders:
             st.markdown(
-                f"**{o['order_code']}**  \n"
-                f"_{o['customer']}_ — **Rs.{o['total']}**  \n"
+                f"**{o['order_code']}**  \n_{o['customer']}_ — **Rs.{o['total']}**  \n"
                 f"<small>{o['created_at'][:19]} · {o['status']}</small>",
                 unsafe_allow_html=True,
             )
@@ -117,10 +107,7 @@ with st.sidebar:
         st.caption("All good 👍")
     else:
         for p in lows:
-            st.markdown(
-                f"- **{p['name']}**: {p['current_stock']} {p['unit']} "
-                f"*(min {p['min_stock']})*"
-            )
+            st.markdown(f"- **{p['name']}**: {p['current_stock']} {p['unit']}")
 
 
 for msg in st.session_state.messages:
@@ -132,7 +119,6 @@ if st.session_state.draft_items:
     st.divider()
     st.subheader("🧾 Order Draft (not final yet)")
     summary = _draft_summary()
-
     for it in summary["items"]:
         c1, c2, c3 = st.columns([3, 3, 2])
         with c1:
@@ -141,10 +127,8 @@ if st.session_state.draft_items:
             st.markdown(f"Rs. {it['unit_price']:.2f} × {it['quantity']} = **Rs. {it['line_total']:.2f}**")
         with c3:
             st.markdown("*In stock*")
-
     for oos in summary["out_of_stock"]:
         st.warning(f"⚠️ {oos['product']} — {oos['reason']}")
-
     st.markdown(f"### Total: Rs. {summary['grand_total']:.2f}")
 
     c_a, c_b, c_c = st.columns(3)
@@ -153,13 +137,13 @@ if st.session_state.draft_items:
                      disabled=len(summary["items"]) == 0, type="primary"):
             result = execute_order(summary, customer=st.session_state.get("customer_name", "Guest"))
             if not result["ok"]:
-                reply = f"Sorry, order fail: {result['error']}"
+                reply = f"Order fail: {result['error']}"
             else:
                 reply = (
                     f"✅ Order confirmed!\n\n"
                     f"**Order ID:** `{result['order_code']}`  \n"
                     f"**Total:** Rs. {result['total']:.2f}  \n"
-                    f"**Status:** PENDING — shopkeeper will confirm.\n\n"
+                    f"**Status:** PENDING\n\n"
                     f"Shukriya! 🙏"
                 )
             st.session_state.messages.append({"role": "assistant", "content": reply})
@@ -171,7 +155,6 @@ if st.session_state.draft_items:
     with c_b:
         if st.button("🗑️ Clear Draft", use_container_width=True):
             st.session_state.draft_items = []
-            st.session_state.pending_spend_orders = []
             st.session_state.messages.append({"role": "assistant", "content": "Draft clear."})
             _trim_messages()
             st.rerun()
@@ -198,36 +181,31 @@ if user_msg:
             products = parsed.get("products", [])
             spend_orders = parsed.get("spend_orders", [])
             mismatches = parsed.get("unit_mismatch", [])
-            source = parsed.get("_source", "groq")
-            err = parsed.get("_error")
+            source = parsed.get("_source", "local")
 
-            # Debug banner if local fallback was used
-            if source == "local_regex":
-                st.caption(f"⚙️ Offline parser used (Groq busy). {('Error: ' + err[:80]) if err else ''}")
+            if source == "local" and not products and not spend_orders and intent == "other":
+                st.caption("⚙️ Couldn't parse — try '2kg atta' or '100 ka tel'")
 
-            # ---- P1: unit mismatch ----
+            # P1: unit mismatch
             if mismatches and not products:
                 m = mismatches[0]
                 real = find_product(m.get("product", ""))
                 data = {"mismatch": {
                     "product": m.get("product"),
-                    "customer_said_unit": m.get("customer_said_unit"),
                     "catalog_unit": real["unit"] if real else "?",
                     "price_per_unit": float(real["unit_price"]) if real else 0,
-                    "stock": float(real["current_stock"]) if real else 0,
                 }}
                 reply = generate_reply(user_msg, "unit_mismatch", data, language)
 
-            # ---- P2: over-stock ----
+            # P2: over-stock
             elif any(p.get("exceeds_stock") for p in products):
                 bad = next(p for p in products if p.get("exceeds_stock"))
-                data = {"mismatch": {
-                    "product": bad["product"], "unit": bad["unit"],
-                    "requested": bad["quantity"], "stock": bad["stock_available"],
-                }}
-                reply = generate_reply(user_msg, "stock_exceeded", data, language)
+                reply = (
+                    f"Sirf {bad['stock_available']} {bad['unit']} {bad['product']} bacha hai. "
+                    f"Aap ne {bad['quantity']} maanga. Kitna lena chahenge?"
+                )
 
-            # ---- P3: MIXED products and/or spend orders ----
+            # P3: products or spend orders
             elif products or spend_orders:
                 added_items_payload = []
                 if products:
@@ -245,32 +223,23 @@ if user_msg:
                 data = {
                     "added_items": added_items_payload,
                     "spend_orders": spend_orders,
-                    "current_draft": [
-                        {"name": d["product"], "qty": d["quantity"], "unit": d["unit"]}
-                        for d in st.session_state.draft_items
-                    ],
                     "draft_total": sum(d["quantity"] * d["unit_price"] for d in st.session_state.draft_items),
                 }
                 reply = generate_reply(user_msg, intent, data, language)
 
-            # ---- P4: greeting ----
             elif intent == "greeting":
                 reply = generate_reply(user_msg, intent, {"note": "greeted"}, language)
 
-            # ---- P5: inventory query ----
             elif intent == "inventory_query":
                 all_items = cached_full_inventory()
                 in_stock = [it for it in all_items if it["stock"] > 0]
-                reply = generate_reply(user_msg, intent,
-                                       {"all_items": in_stock, "total": len(all_items)}, language)
+                reply = generate_reply(user_msg, intent, {"all_items": in_stock}, language)
 
-            # ---- P6: single product / price ----
             elif intent in ("product_query", "price_query"):
                 all_items = cached_full_inventory()
                 in_stock = [it for it in all_items if it["stock"] > 0]
                 reply = generate_reply(user_msg, "inventory_query", {"all_items": in_stock}, language)
 
-            # ---- P7: confirm ----
             elif intent == "confirm":
                 pending = st.session_state.get("pending_spend_orders", [])
                 if pending:
@@ -281,37 +250,24 @@ if user_msg:
                             "unit_price": s["unit_price"],
                         }])
                     st.session_state.pending_spend_orders = []
-                    reply = "Theek hai, add kar diya. Neeche Confirm Order button dabaiye."
+                    reply = "Theek hai, add kar diya. Neeche Confirm Order dabaiye."
                 else:
-                    reply = "Confirm karne ke liye neeche Confirm Order button dabaiye. 🙂"
+                    reply = "Neeche 'Confirm Order' button dabaiye. 🙂"
 
-            # ---- P8: cancel ----
             elif intent == "cancel":
                 st.session_state.draft_items = []
                 st.session_state.pending_spend_orders = []
-                reply = "Cancel kar diya. Kuch aur chahiye?"
+                reply = "Cancel kar diya."
 
-            # ---- P9: ONLY true fallback - show error, NOT inventory dump ----
             else:
                 unknown = parsed.get("unknown", [])
                 if unknown:
-                    reply = (
-                        f"Sorry, ye products catalog mein nahi hain: {', '.join(unknown)}. "
-                        f"Try: atta, chawal, doodh, anday, cheeni, tel, bread, etc."
-                    )
-                elif err:
-                    reply = (
-                        f"⚠️ AI service issue: {err[:120]}\n\n"
-                        f"Aap ye try karein: '2kg atta', '1 dozen eggs', ya '100 ka tel'."
-                    )
+                    reply = f"Ye products nahi hain: {', '.join(unknown)}. Try: atta, chawal, doodh, anday, cheeni, tel."
                 else:
-                    reply = (
-                        "Main samajh nahi paya. Try: '2kg atta, 1 dozen eggs', "
-                        "'100 ka tel', ya 'stock me kia hai'."
-                    )
+                    reply = "Try: '2kg atta, 1 dozen eggs' ya '100 ka tel'."
 
             if not reply or not reply.strip():
-                reply = "Main samajh nahi paya. '2kg atta' jaisa likh dein."
+                reply = "Dobara likh dein? Jaise: '2kg atta'."
 
             st.markdown(reply)
             st.session_state.messages.append({"role": "assistant", "content": reply})
