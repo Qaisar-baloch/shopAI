@@ -17,9 +17,6 @@ sidebar_brand()
 init_db()
 
 
-# ---------------------------------------------------------------
-# Cached helpers
-# ---------------------------------------------------------------
 @st.cache_data(ttl=30)
 def cached_recent_orders(limit=8):
     return recent_orders(limit)
@@ -43,9 +40,6 @@ def cached_full_inventory():
     ]
 
 
-# ---------------------------------------------------------------
-# Session state
-# ---------------------------------------------------------------
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "draft_items" not in st.session_state:
@@ -55,8 +49,8 @@ if "customer_name" not in st.session_state:
 
 
 def _trim_messages():
-    if len(st.session_state.messages) > 30:
-        st.session_state.messages = st.session_state.messages[-30:]
+    if len(st.session_state.messages) > 40:
+        st.session_state.messages = st.session_state.messages[-40:]
 
 
 def _add_to_draft(products):
@@ -93,9 +87,6 @@ def _draft_summary():
     return build_order_summary(items_with_ids)
 
 
-# ---------------------------------------------------------------
-# Page header
-# ---------------------------------------------------------------
 page_header(
     "A better way to take orders",
     "CUSTOMER AI DESK",
@@ -103,7 +94,6 @@ page_header(
 )
 
 
-# ---- Sidebar panels ----
 with st.sidebar:
     st.header("📋 Recent Orders")
     orders = cached_recent_orders(8)
@@ -131,13 +121,11 @@ with st.sidebar:
             )
 
 
-# ---- Chat history ----
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
 
-# ---- Order Draft panel ----
 if st.session_state.draft_items:
     st.divider()
     st.subheader("🧾 Order Draft (from live inventory — not final yet)")
@@ -207,7 +195,6 @@ if st.session_state.draft_items:
             st.rerun()
 
 
-# ---- Chat input ----
 user_msg = st.chat_input("Type your order...")
 if user_msg:
     st.session_state.messages.append({"role": "user", "content": user_msg})
@@ -220,8 +207,10 @@ if user_msg:
             intent = parsed.get("intent", "other")
             language = parsed.get("language", "en")
             products = parsed.get("products", [])
+            spend_orders = parsed.get("spend_orders", [])
             mismatches = parsed.get("unit_mismatch", [])
 
+            # ---- Priority 1: unit mismatch ----
             if mismatches:
                 m = mismatches[0]
                 real = find_product(m.get("product", ""))
@@ -236,6 +225,41 @@ if user_msg:
                 }
                 reply = generate_reply(user_msg, "unit_mismatch", data, language)
 
+            # ---- Priority 2: spend-based order ----
+            elif spend_orders:
+                # If any exceeds stock, report that
+                exceeded = [s for s in spend_orders if s["exceeds_stock"]]
+                if exceeded:
+                    bad = exceeded[0]
+                    data = {
+                        "mismatch": {
+                            "product": bad["product"],
+                            "unit": bad["unit"],
+                            "requested": bad["computed_quantity"],
+                            "stock": bad["stock_available"],
+                        }
+                    }
+                    reply = generate_reply(user_msg, "stock_exceeded", data, language)
+                else:
+                    # Auto-add all spend orders to draft
+                    for s in spend_orders:
+                        _add_to_draft([{
+                            "product": s["product"],
+                            "product_id": s["product_id"],
+                            "quantity": s["computed_quantity"],
+                            "unit": s["unit"],
+                            "unit_price": s["unit_price"],
+                        }])
+                    data = {
+                        "spend_orders": spend_orders,
+                        "draft_total": sum(
+                            d["quantity"] * d["unit_price"]
+                            for d in st.session_state.draft_items
+                        ),
+                    }
+                    reply = generate_reply(user_msg, "spend_based_order", data, language)
+
+            # ---- Priority 3: quantity exceeds stock ----
             elif any(p.get("exceeds_stock") for p in products):
                 bad = next(p for p in products if p.get("exceeds_stock"))
                 data = {
