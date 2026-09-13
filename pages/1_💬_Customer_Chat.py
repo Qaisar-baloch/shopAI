@@ -46,6 +46,8 @@ if "draft_items" not in st.session_state:
     st.session_state.draft_items = []
 if "customer_name" not in st.session_state:
     st.session_state.customer_name = "Guest"
+if "pending_spend_orders" not in st.session_state:
+    st.session_state.pending_spend_orders = []
 
 
 def _trim_messages():
@@ -172,12 +174,14 @@ if st.session_state.draft_items:
                 )
             st.session_state.messages.append({"role": "assistant", "content": reply})
             st.session_state.draft_items = []
+            st.session_state.pending_spend_orders = []
             st.cache_data.clear()
             _trim_messages()
             st.rerun()
     with col_b:
         if st.button("🗑️ Clear Draft", use_container_width=True):
             st.session_state.draft_items = []
+            st.session_state.pending_spend_orders = []
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": "Draft clear kar diya. Naya order bataiye.",
@@ -187,6 +191,7 @@ if st.session_state.draft_items:
     with col_c:
         if st.button("❌ Cancel All", use_container_width=True):
             st.session_state.draft_items = []
+            st.session_state.pending_spend_orders = []
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": "Order cancel. Kuch aur chahiye? 🙂",
@@ -210,8 +215,8 @@ if user_msg:
             spend_orders = parsed.get("spend_orders", [])
             mismatches = parsed.get("unit_mismatch", [])
 
-            # ---- Priority 1: unit mismatch ----
-            if mismatches:
+            # ---- P1: unit mismatch (hard) ----
+            if mismatches and not products:
                 m = mismatches[0]
                 real = find_product(m.get("product", ""))
                 data = {
@@ -225,20 +230,7 @@ if user_msg:
                 }
                 reply = generate_reply(user_msg, "unit_mismatch", data, language)
 
-            # ---- Priority 2: spend-based order ----
-            elif spend_orders:
-                # Never auto-add. Always explain, then ask.
-                # Only add to draft if the customer confirms (next turn intent=confirm).
-                data = {"spend_orders": spend_orders}
-                reply = generate_reply(user_msg, "spend_based_order", data, language)
-                # Store pending spend orders for the next "confirm" turn
-                st.session_state["pending_spend_orders"] = [
-                    s for s in spend_orders
-                    if s.get("fulfilment") in ("fraction", "full_units_with_leftover")
-                    and not s.get("exceeds_stock")
-                ]
-
-            # ---- Priority 3: quantity exceeds stock ----
+            # ---- P2: over-stock check (any product) ----
             elif any(p.get("exceeds_stock") for p in products):
                 bad = next(p for p in products if p.get("exceeds_stock"))
                 data = {
@@ -251,110 +243,31 @@ if user_msg:
                 }
                 reply = generate_reply(user_msg, "stock_exceeded", data, language)
 
-            elif intent == "greeting":
-                reply = generate_reply(user_msg, intent, {"note": "customer greeted"}, language)
-
-            elif intent == "inventory_query":
-                all_items = cached_full_inventory()
-                in_stock = [it for it in all_items if it["stock"] > 0]
-                data = {
-                    "query_type": "full_inventory",
-                    "all_items": in_stock,
-                    "total_products": len(all_items),
-                    "in_stock_count": len(in_stock),
-                }
-                reply = generate_reply(user_msg, intent, data, language)
-
-            elif intent == "product_query":
-                if products:
-                    p = products[0]
-                    real = get_product_by_id(p["product_id"])
-                    data = {
-                        "product": {
-                            "name": real["name"],
-                            "unit": real["unit"],
-                            "unit_price": float(real["unit_price"]),
-                            "stock": float(real["current_stock"]),
-                        }
-                    }
-                    reply = generate_reply(user_msg, intent, data, language)
-                else:
-                    all_items = cached_full_inventory()
-                    in_stock = [it for it in all_items if it["stock"] > 0]
-                    reply = generate_reply(user_msg, "inventory_query",
-                                           {"all_items": in_stock}, language)
-
-            elif intent == "price_query":
-                if products:
-                    p = products[0]
-                    real = get_product_by_id(p["product_id"])
-                    data = {
-                        "product": {
-                            "name": real["name"],
-                            "unit": real["unit"],
-                            "unit_price": float(real["unit_price"]),
-                            "stock": float(real["current_stock"]),
-                        }
-                    }
-                    reply = generate_reply(user_msg, intent, data, language)
-                else:
-                    all_items = cached_full_inventory()
-                    reply = generate_reply(user_msg, "inventory_query",
-                                           {"all_items": all_items}, language)
-
-            elif intent == "order_intent":
+            # ---- P3: MIXED — products and/or spend orders ----
+            elif products or spend_orders:
+                added_items_payload = []
                 if products:
                     _add_to_draft(products)
-                    draft = st.session_state.draft_items
-                    items_for_reply = [
-                        {"name": d["product"], "qty": d["quantity"], "unit": d["unit"]}
-                        for d in draft
+                    added_items_payload = [
+                        {"name": p["product"], "qty": p["quantity"], "unit": p["unit"]}
+                        for p in products
                     ]
-                    total = sum(d["quantity"] * d["unit_price"] for d in draft)
-                    data = {
-                        "added_items": [
-                            {"name": p["product"], "qty": p["quantity"], "unit": p["unit"]}
-                            for p in products
-                        ],
-                        "current_draft": items_for_reply,
-                        "draft_total": total,
-                    }
-                    reply = generate_reply(user_msg, intent, data, language)
-                else:
-                    all_items = cached_full_inventory()
-                    in_stock = [it for it in all_items if it["stock"] > 0]
-                    reply = generate_reply(user_msg, "inventory_query",
-                                           {"all_items": in_stock}, language)
 
-            elif intent == "confirm":
-                # If we had pending spend orders, add them now
-                pending = st.session_state.get("pending_spend_orders", [])
-                if pending:
-                    for s in pending:
-                        _add_to_draft([{
-                            "product": s["product"],
-                            "product_id": s["product_id"],
-                            "quantity": s["computed_quantity"],
-                            "unit": s["unit"],
-                            "unit_price": s["unit_price"],
-                        }])
-                    st.session_state["pending_spend_orders"] = []
-                    reply = "Theek hai, add kar diya. Neeche Confirm Order button dabaiye."
-                else:
-                    reply = "Confirm karne ke liye neeche 'Confirm Order' button dabaiye. 🙂"
+                # Only actionable spend orders go into pending
+                actionable_spend = [
+                    s for s in spend_orders
+                    if s.get("fulfilment") in ("fraction", "full_units_with_leftover")
+                    and not s.get("exceeds_stock")
+                ]
+                st.session_state.pending_spend_orders = actionable_spend
 
-            elif intent == "cancel":
-                st.session_state.draft_items = []
-                st.session_state["pending_spend_orders"] = []
-                reply = generate_reply(user_msg, intent, {"note": "order cancelled"}, language)
-
-            else:
-                all_items = cached_full_inventory()
-                in_stock = [it for it in all_items if it["stock"] > 0]
-                reply = generate_reply(user_msg, "inventory_query",
-                                       {"all_items": in_stock}, language)
-
-            st.markdown(reply)
-            st.session_state.messages.append({"role": "assistant", "content": reply})
-            _trim_messages()
-            st.rerun()
+                data = {
+                    "added_items": added_items_payload,
+                    "spend_orders": spend_orders,
+                    "current_draft": [
+                        {"name": d["product"], "qty": d["quantity"], "unit": d["unit"]}
+                        for d in st.session_state.draft_items
+                    ],
+                    "draft_total": sum(
+                        d["quantity"] * d["unit_price"]
+                        for d
