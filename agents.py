@@ -703,4 +703,8 @@ def generate_reply(customer_message: str, intent: str, data: dict, language: str
 
 
 def parse_order(message: str) -> dict:
-   
+    result = classify_message(message)
+    return {
+        "items": [p for p in result.get("products", []) if p["quantity"] > 0],
+        "unknown": result.get("unknown", []),
+    }
