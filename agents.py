@@ -124,7 +124,7 @@ def classify_message(message: str) -> dict:
 
     try:
         resp = client.chat.completions.create(
-            model="openai/gpt-oss-20b",
+            model="whisper-large-v3",
             messages=[
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": message},
