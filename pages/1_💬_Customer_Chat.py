@@ -52,6 +52,18 @@ def _trim_messages():
         st.session_state.messages = st.session_state.messages[-40:]
 
 
+def _should_replace_draft(new_products, current_draft):
+    """
+    True if the new message mentions ALL products already in the draft
+    → treat as re-statement, replace the draft entirely.
+    """
+    if not current_draft or not new_products:
+        return False
+    draft_ids = {d["product_id"] for d in current_draft}
+    new_ids = {p["product_id"] for p in new_products}
+    return draft_ids.issubset(new_ids)
+
+
 def _add_to_draft(products):
     for p in products:
         if p["quantity"] <= 0:
@@ -143,8 +155,7 @@ if st.session_state.draft_items:
                     f"✅ Order confirmed!\n\n"
                     f"**Order ID:** `{result['order_code']}`  \n"
                     f"**Total:** Rs. {result['total']:.2f}  \n"
-                    f"**Status:** PENDING\n\n"
-                    f"Shukriya! 🙏"
+                    f"**Status:** PENDING\n\nShukriya! 🙏"
                 )
             st.session_state.messages.append({"role": "assistant", "content": reply})
             st.session_state.draft_items = []
@@ -181,10 +192,6 @@ if user_msg:
             products = parsed.get("products", [])
             spend_orders = parsed.get("spend_orders", [])
             mismatches = parsed.get("unit_mismatch", [])
-            source = parsed.get("_source", "local")
-
-            if source == "local" and not products and not spend_orders and intent == "other":
-                st.caption("⚙️ Couldn't parse — try '2kg atta' or '100 ka tel'")
 
             # P1: unit mismatch
             if mismatches and not products:
@@ -207,6 +214,10 @@ if user_msg:
 
             # P3: products or spend orders
             elif products or spend_orders:
+                # ---- RESTATEMENT DETECTION ----
+                if products and _should_replace_draft(products, st.session_state.draft_items):
+                    st.session_state.draft_items = []
+
                 added_items_payload = []
                 if products:
                     _add_to_draft(products)
