@@ -339,4 +339,22 @@ if user_msg:
                             "unit_price": s["unit_price"],
                         }])
                     st.session_state["pending_spend_orders"] = []
-                    reply =
+                    reply = "Theek hai, add kar diya. Neeche Confirm Order button dabaiye."
+                else:
+                    reply = "Confirm karne ke liye neeche 'Confirm Order' button dabaiye. 🙂"
+
+            elif intent == "cancel":
+                st.session_state.draft_items = []
+                st.session_state["pending_spend_orders"] = []
+                reply = generate_reply(user_msg, intent, {"note": "order cancelled"}, language)
+
+            else:
+                all_items = cached_full_inventory()
+                in_stock = [it for it in all_items if it["stock"] > 0]
+                reply = generate_reply(user_msg, "inventory_query",
+                                       {"all_items": in_stock}, language)
+
+            st.markdown(reply)
+            st.session_state.messages.append({"role": "assistant", "content": reply})
+            _trim_messages()
+            st.rerun()
