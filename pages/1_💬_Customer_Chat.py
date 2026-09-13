@@ -46,6 +46,8 @@ if "draft_items" not in st.session_state:
     st.session_state.draft_items = []
 if "customer_name" not in st.session_state:
     st.session_state.customer_name = "Guest"
+if "pending_spend_orders" not in st.session_state:
+    st.session_state.pending_spend_orders = []
 
 
 def _trim_messages():
@@ -172,12 +174,14 @@ if st.session_state.draft_items:
                 )
             st.session_state.messages.append({"role": "assistant", "content": reply})
             st.session_state.draft_items = []
+            st.session_state.pending_spend_orders = []
             st.cache_data.clear()
             _trim_messages()
             st.rerun()
     with col_b:
         if st.button("🗑️ Clear Draft", use_container_width=True):
             st.session_state.draft_items = []
+            st.session_state.pending_spend_orders = []
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": "Draft clear kar diya. Naya order bataiye.",
@@ -187,6 +191,7 @@ if st.session_state.draft_items:
     with col_c:
         if st.button("❌ Cancel All", use_container_width=True):
             st.session_state.draft_items = []
+            st.session_state.pending_spend_orders = []
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": "Order cancel. Kuch aur chahiye? 🙂",
@@ -225,21 +230,8 @@ if user_msg:
                 }
                 reply = generate_reply(user_msg, "unit_mismatch", data, language)
 
-            # ---- Priority 2: spend-based order ----
-            elif spend_orders:
-                # Never auto-add. Always explain, then ask.
-                # Only add to draft if the customer confirms (next turn intent=confirm).
-                data = {"spend_orders": spend_orders}
-                reply = generate_reply(user_msg, "spend_based_order", data, language)
-                # Store pending spend orders for the next "confirm" turn
-                st.session_state["pending_spend_orders"] = [
-                    s for s in spend_orders
-                    if s.get("fulfilment") in ("fraction", "full_units_with_leftover")
-                    and not s.get("exceeds_stock")
-                ]
-
-            # ---- Priority 3: quantity exceeds stock ----
-            elif any(p.get("exceeds_stock") for p in products):
+            # ---- Priority 2: over-stock quantity (regular products) ----
+            elif products and any(p.get("exceeds_stock") for p in products):
                 bad = next(p for p in products if p.get("exceeds_stock"))
                 data = {
                     "mismatch": {
@@ -251,9 +243,46 @@ if user_msg:
                 }
                 reply = generate_reply(user_msg, "stock_exceeded", data, language)
 
+            # ---- Priority 3: MIXED — regular products + spend orders (or just one of them) ----
+            elif products or spend_orders:
+                # Step A: add regular products to draft immediately
+                added_items_payload = []
+                if products:
+                    _add_to_draft(products)
+                    added_items_payload = [
+                        {"name": p["product"], "qty": p["quantity"], "unit": p["unit"]}
+                        for p in products
+                    ]
+
+                # Step B: queue spend orders for confirmation
+                # Store only the actionable ones (fraction or full_units)
+                actionable_spend = [
+                    s for s in spend_orders
+                    if s.get("fulfilment") in ("fraction", "full_units_with_leftover")
+                    and not s.get("exceeds_stock")
+                ]
+                st.session_state.pending_spend_orders = actionable_spend
+
+                # Step C: reply covering both
+                data = {
+                    "added_items": added_items_payload,
+                    "spend_orders": spend_orders,
+                    "current_draft": [
+                        {"name": d["product"], "qty": d["quantity"], "unit": d["unit"]}
+                        for d in st.session_state.draft_items
+                    ],
+                    "draft_total": sum(
+                        d["quantity"] * d["unit_price"]
+                        for d in st.session_state.draft_items
+                    ),
+                }
+                reply = generate_reply(user_msg, intent, data, language)
+
+            # ---- Priority 4: greeting ----
             elif intent == "greeting":
                 reply = generate_reply(user_msg, intent, {"note": "customer greeted"}, language)
 
+            # ---- Priority 5: inventory query ----
             elif intent == "inventory_query":
                 all_items = cached_full_inventory()
                 in_stock = [it for it in all_items if it["stock"] > 0]
@@ -265,69 +294,21 @@ if user_msg:
                 }
                 reply = generate_reply(user_msg, intent, data, language)
 
+            # ---- Priority 6: single-product query ----
             elif intent == "product_query":
-                if products:
-                    p = products[0]
-                    real = get_product_by_id(p["product_id"])
-                    data = {
-                        "product": {
-                            "name": real["name"],
-                            "unit": real["unit"],
-                            "unit_price": float(real["unit_price"]),
-                            "stock": float(real["current_stock"]),
-                        }
-                    }
-                    reply = generate_reply(user_msg, intent, data, language)
-                else:
-                    all_items = cached_full_inventory()
-                    in_stock = [it for it in all_items if it["stock"] > 0]
-                    reply = generate_reply(user_msg, "inventory_query",
-                                           {"all_items": in_stock}, language)
+                all_items = cached_full_inventory()
+                in_stock = [it for it in all_items if it["stock"] > 0]
+                reply = generate_reply(user_msg, "inventory_query",
+                                       {"all_items": in_stock}, language)
 
+            # ---- Priority 7: price query ----
             elif intent == "price_query":
-                if products:
-                    p = products[0]
-                    real = get_product_by_id(p["product_id"])
-                    data = {
-                        "product": {
-                            "name": real["name"],
-                            "unit": real["unit"],
-                            "unit_price": float(real["unit_price"]),
-                            "stock": float(real["current_stock"]),
-                        }
-                    }
-                    reply = generate_reply(user_msg, intent, data, language)
-                else:
-                    all_items = cached_full_inventory()
-                    reply = generate_reply(user_msg, "inventory_query",
-                                           {"all_items": all_items}, language)
+                all_items = cached_full_inventory()
+                reply = generate_reply(user_msg, "inventory_query",
+                                       {"all_items": all_items}, language)
 
-            elif intent == "order_intent":
-                if products:
-                    _add_to_draft(products)
-                    draft = st.session_state.draft_items
-                    items_for_reply = [
-                        {"name": d["product"], "qty": d["quantity"], "unit": d["unit"]}
-                        for d in draft
-                    ]
-                    total = sum(d["quantity"] * d["unit_price"] for d in draft)
-                    data = {
-                        "added_items": [
-                            {"name": p["product"], "qty": p["quantity"], "unit": p["unit"]}
-                            for p in products
-                        ],
-                        "current_draft": items_for_reply,
-                        "draft_total": total,
-                    }
-                    reply = generate_reply(user_msg, intent, data, language)
-                else:
-                    all_items = cached_full_inventory()
-                    in_stock = [it for it in all_items if it["stock"] > 0]
-                    reply = generate_reply(user_msg, "inventory_query",
-                                           {"all_items": in_stock}, language)
-
+            # ---- Priority 8: confirm ----
             elif intent == "confirm":
-                # If we had pending spend orders, add them now
                 pending = st.session_state.get("pending_spend_orders", [])
                 if pending:
                     for s in pending:
@@ -338,21 +319,30 @@ if user_msg:
                             "unit": s["unit"],
                             "unit_price": s["unit_price"],
                         }])
-                    st.session_state["pending_spend_orders"] = []
+                    st.session_state.pending_spend_orders = []
                     reply = "Theek hai, add kar diya. Neeche Confirm Order button dabaiye."
                 else:
                     reply = "Confirm karne ke liye neeche 'Confirm Order' button dabaiye. 🙂"
 
+            # ---- Priority 9: cancel ----
             elif intent == "cancel":
                 st.session_state.draft_items = []
-                st.session_state["pending_spend_orders"] = []
+                st.session_state.pending_spend_orders = []
                 reply = generate_reply(user_msg, intent, {"note": "order cancelled"}, language)
 
+            # ---- Priority 10: fallback ----
             else:
                 all_items = cached_full_inventory()
                 in_stock = [it for it in all_items if it["stock"] > 0]
                 reply = generate_reply(user_msg, "inventory_query",
                                        {"all_items": in_stock}, language)
+
+            # Safety: if reply empty, show a helpful message
+            if not reply or not reply.strip():
+                reply = (
+                    "Main samajh nahi paya — dobara likh dein? "
+                    "Aap '2kg atta' ya 'stock me kia hai' likh sakte hain."
+                )
 
             st.markdown(reply)
             st.session_state.messages.append({"role": "assistant", "content": reply})
