@@ -1,8 +1,11 @@
 import os
 import json
+import logging
 import functools
 from groq import Groq
 from db import find_product, list_products, get_product_by_id
+
+logger = logging.getLogger("dukaanai")
 
 
 # ---------------------------------------------------------------
@@ -158,8 +161,15 @@ def classify_message(message: str) -> dict:
             "unknown": unknown,
         }
     except Exception as e:
+        # CHANGED: this used to silently swallow every Groq failure and
+        # return intent "other", which the chat page then treated as a
+        # normal unrecognized message — dumping the full catalog on
+        # EVERY error (bad API key, invalid model, rate limit, etc).
+        # Logging here means the real cause shows up in Streamlit
+        # Cloud's "Manage app" -> logs instead of vanishing silently.
+        logger.exception("classify_message failed for input: %r", message)
         return {
-            "intent": "other",
+            "intent": "system_error",
             "language": "en",
             "products": [],
             "unit_mismatch": [],
@@ -214,7 +224,8 @@ def generate_reply(customer_message: str, intent: str, data: dict, language: str
             max_tokens=500,
         )
         return resp.choices[0].message.content.strip()
-    except Exception:
+    except Exception as e:
+        logger.exception("generate_reply failed for intent=%r", intent)
         return _fallback_reply(intent, data, language)
 
 
@@ -223,6 +234,29 @@ def _fallback_reply(intent, data, language):
 
     if intent == "greeting":
         return "Assalam-o-Alaikum! Kya chahiye?" if is_ur else "Hi! How can I help you?"
+
+    if intent == "system_error":
+        return (
+            "Maaf kijiye, thoda masla ho gaya hai. Dobara koshish karein."
+            if is_ur else
+            "Sorry, I'm having a little trouble right now — please try again in a moment."
+        )
+
+    if intent == "not_found":
+        requested = ", ".join(data.get("requested", [])) or "that item"
+        suggestions = data.get("suggestions", [])
+        if suggestions:
+            sugg_text = ", ".join(suggestions)
+            return (
+                f"'{requested}' hamare paas is naam se nahi mila. Shayad aap yeh chahte hain: {sugg_text}?"
+                if is_ur else
+                f"Couldn't find '{requested}'. Did you mean: {sugg_text}?"
+            )
+        return (
+            f"Maaf kijiye, '{requested}' hamare paas available nahi hai."
+            if is_ur else
+            f"Sorry, '{requested}' isn't something we carry."
+        )
 
     if intent == "unit_mismatch":
         m = data.get("mismatch", {})
