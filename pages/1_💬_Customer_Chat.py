@@ -1,3 +1,5 @@
+import difflib
+
 import streamlit as st
 from db import (
     init_db,
@@ -52,6 +54,29 @@ if "draft_items" not in st.session_state:
     st.session_state.draft_items = []
 if "customer_name" not in st.session_state:
     st.session_state.customer_name = "Guest"
+
+
+def _not_found_reply(user_msg, unknown_names, language):
+    """
+    CHANGED: previously any product_query/price_query/order_intent with
+    no matched products silently fell through to dumping the entire
+    60-item catalog. This uses the classifier's own 'unknown' field
+    (which existed already but was never read anywhere) to suggest
+    close matches instead — much more honest and useful than a full
+    inventory dump for something like a misspelled product name.
+    """
+    catalog_names = [it["name"] for it in cached_full_inventory()]
+    lower_to_real = {n.lower(): n for n in catalog_names}
+    suggestions = []
+    for name in unknown_names:
+        lower_matches = difflib.get_close_matches(
+            name.lower(), list(lower_to_real.keys()), n=3, cutoff=0.5
+        )
+        suggestions += [lower_to_real[m] for m in lower_matches]
+    suggestions = list(dict.fromkeys(suggestions))  # dedupe, keep order
+
+    data = {"requested": unknown_names, "suggestions": suggestions}
+    return generate_reply(user_msg, "not_found", data, language)
 
 
 def _trim_messages():
@@ -248,6 +273,14 @@ if user_msg:
                 }
                 reply = generate_reply(user_msg, "stock_exceeded", data, language)
 
+            elif intent == "system_error":
+                # CHANGED: previously classify_message() swallowed every
+                # Groq failure and returned "other", which fell through
+                # to the full-catalog-dump branch below — making a
+                # broken API key or bad model name look identical to
+                # "customer said something unrecognized" on every turn.
+                reply = generate_reply(user_msg, "system_error", {}, language)
+
             elif intent == "greeting":
                 reply = generate_reply(user_msg, intent, {"note": "customer greeted"}, language)
 
@@ -275,6 +308,8 @@ if user_msg:
                         }
                     }
                     reply = generate_reply(user_msg, intent, data, language)
+                elif parsed.get("unknown"):
+                    reply = _not_found_reply(user_msg, parsed["unknown"], language)
                 else:
                     all_items = cached_full_inventory()
                     in_stock = [it for it in all_items if it["stock"] > 0]
@@ -294,6 +329,8 @@ if user_msg:
                         }
                     }
                     reply = generate_reply(user_msg, intent, data, language)
+                elif parsed.get("unknown"):
+                    reply = _not_found_reply(user_msg, parsed["unknown"], language)
                 else:
                     all_items = cached_full_inventory()
                     reply = generate_reply(user_msg, "inventory_query",
@@ -317,6 +354,8 @@ if user_msg:
                         "draft_total": total,
                     }
                     reply = generate_reply(user_msg, intent, data, language)
+                elif parsed.get("unknown"):
+                    reply = _not_found_reply(user_msg, parsed["unknown"], language)
                 else:
                     all_items = cached_full_inventory()
                     in_stock = [it for it in all_items if it["stock"] > 0]
