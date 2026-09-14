@@ -43,18 +43,14 @@ def _family_catalog_matches(fragment):
             exact_family.append(p)
         elif q in name or any(q in a for a in aliases):
             partial.append(p)
-    # If the exact alias exists on only one SKU (e.g. "atta" on Atta 5kg),
-    # still return the other SKUs whose names belong to the same family.
     if exact_family:
         family_key = _base_product_name(exact_family[0]["name"])
-        family_words = set(family_key.split())
         related = [
             p for p in products
             if _base_product_name(p["name"]) == family_key
             or q in _base_product_name(p["name"])
             or any(q in a for a in (p.get("aliases") or "").lower().split(","))
         ]
-        # Keep the exact-family rows first, then related variants.
         seen = set()
         result = []
         for p in exact_family + related + partial:
@@ -86,8 +82,6 @@ def _catalog_matches(message):
 
 def _query_items(message):
     """Resolve the product family/SKU(s) mentioned in a price or availability question."""
-    # A bare family question such as "atta hai?" or "sugar ka price?"
-    # must show every size/variant, not just the SKU that owns the alias.
     if not re.search(r"\d", message):
         for word in re.findall(r"[a-z]+", message.lower()):
             if word in _QUERY_WORDS:
@@ -116,8 +110,6 @@ def _resolve_catalog_size(fragment, qty, user_unit):
         return None
     qty = float(qty)
     unit = _normalize_unit(user_unit)
-
-    # Prefer a family whose base name is exactly what the customer typed.
     exact_family = [p for p in candidates if _base_product_name(p["name"]) == fragment.strip().lower()]
     ordered = exact_family + [p for p in candidates if p not in exact_family]
 
@@ -125,8 +117,6 @@ def _resolve_catalog_size(fragment, qty, user_unit):
         size, sku_unit = _sku_size(p["name"])
         if size is not None and sku_unit == unit and abs(size - qty) < 0.05:
             return {"status": "ok", "product": p, "quantity": 1.0}
-
-    # Last resort: exact numeric size even when the displayed selling unit differs.
     for p in ordered:
         size, sku_unit = _sku_size(p["name"])
         if size is not None and abs(size - qty) < 0.05:
@@ -181,11 +171,18 @@ def smart_classify_message(message, base_classifier):
             "spend_orders": [], "unit_mismatch": [], "unknown": [], "query_items": items, "_source": "chat_fix",
         }
 
-    # A bare product or 'product hai' is a question/selection, not a quantity-1 order.
+    # A bare product or 'product hai' is a selection question, not a quantity-1 order.
     stripped = re.sub(r"\b(?:hai|hain|available|milta|milti|milega|chahiye)\b", " ", lower)
     if not re.search(r"\d", stripped):
         matches = _query_items(msg)
         if matches:
+            if len(matches) > 1:
+                return {
+                    "intent": "ambiguous_request", "language": language, "products": [], "ambiguous": [{
+                        "status": "ambiguous", "family": _base_product_name(matches[0]["name"]),
+                        "requested_qty": None, "requested_unit": None, "options": matches,
+                    }], "spend_orders": [], "unit_mismatch": [], "unknown": [], "query_items": matches, "_source": "chat_fix",
+                }
             return {
                 "intent": "product_query", "language": language, "products": [], "ambiguous": [],
                 "spend_orders": [], "unit_mismatch": [], "unknown": [], "query_items": matches, "_source": "chat_fix",
