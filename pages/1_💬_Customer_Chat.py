@@ -2,6 +2,7 @@ import re as _re
 import streamlit as st
 from db import init_db, recent_orders, low_stock_products, find_product, list_products
 from agents import classify_message, generate_reply, resolve_pending_selection
+from chat_fixes import smart_classify_message
 from inventory import build_order_summary, execute_order
 from styles import inject_theme, page_header, sidebar_brand, footer
 
@@ -164,7 +165,7 @@ if user_msg:
                     "unit_mismatch": [], "unknown": [], "_source": "selection",
                 }
             else:
-                parsed = classify_message(user_msg)
+                parsed = smart_classify_message(user_msg, classify_message)
 
             intent = parsed.get("intent", "other")
             language = parsed.get("language", "en")
@@ -202,7 +203,15 @@ if user_msg:
                 in_stock = [it for it in cached_full_inventory() if it["stock"] > 0]
                 reply = generate_reply(user_msg, intent, {"all_items": in_stock}, language)
             elif intent == "product_query":
-                in_stock = [it for it in cached_full_inventory() if it["stock"] > 0]
+                all_items = cached_full_inventory()
+                query_items = parsed.get("query_items")
+                if query_items:
+                    wanted = {p["id"] for p in query_items}
+                    in_stock = [it for it, p in zip(all_items, list_products()) if p["id"] in wanted and it["stock"] > 0]
+                    if not in_stock:
+                        in_stock = [it for it, p in zip(all_items, list_products()) if p["id"] in wanted]
+                else:
+                    in_stock = [it for it in all_items if it["stock"] > 0]
                 reply = generate_reply(user_msg, "product_query", {"all_items": in_stock}, language)
             elif intent == "confirm":
                 pending = st.session_state.get("pending_spend_orders", [])
