@@ -4,7 +4,7 @@ from db import (
     init_db, recent_orders, low_stock_products,
     find_product, get_product_by_id, list_products,
 )
-from agents import classify_message, generate_reply
+from agents import classify_message, generate_reply, resolve_ambiguous_followup
 from inventory import build_order_summary, execute_order
 from styles import inject_theme, page_header, sidebar_brand, footer
 
@@ -42,6 +42,8 @@ if "customer_name" not in st.session_state:
     st.session_state.customer_name = "Guest"
 if "pending_spend_orders" not in st.session_state:
     st.session_state.pending_spend_orders = []
+if "pending_ambiguous" not in st.session_state:
+    st.session_state.pending_ambiguous = None
 
 
 def _trim_messages():
@@ -148,6 +150,7 @@ if st.session_state.draft_items:
                 )
             st.session_state.messages.append({"role": "assistant", "content": reply})
             st.session_state.draft_items = []
+            st.session_state.pending_ambiguous = None
             st.session_state.pending_spend_orders = []
             st.cache_data.clear()
             _trim_messages()
@@ -155,6 +158,7 @@ if st.session_state.draft_items:
     with c_b:
         if st.button("🗑️ Clear Draft", use_container_width=True):
             st.session_state.draft_items = []
+            st.session_state.pending_ambiguous = None
             st.session_state.pending_spend_orders = []
             st.session_state.messages.append({"role": "assistant", "content": "Draft clear."})
             _trim_messages()
@@ -162,6 +166,7 @@ if st.session_state.draft_items:
     with c_c:
         if st.button("❌ Cancel All", use_container_width=True):
             st.session_state.draft_items = []
+            st.session_state.pending_ambiguous = None
             st.session_state.pending_spend_orders = []
             st.session_state.messages.append({"role": "assistant", "content": "Cancelled."})
             _trim_messages()
@@ -176,6 +181,48 @@ if user_msg:
 
     with st.chat_message("assistant"):
         with st.spinner("Ek second..."):
+            # CHANGED (bug fix): if the bot just asked "which size?", try
+            # to resolve THIS message against those specific options
+            # first, before running the full parser from scratch. This
+            # is what makes a short follow-up like "5kg wla kardo" work
+            # instead of requiring the customer to repeat the product
+            # name every time.
+            pending = st.session_state.get("pending_ambiguous")
+            resolved_option = None
+            if pending:
+                resolved_option = resolve_ambiguous_followup(pending, user_msg)
+
+            if resolved_option:
+                qty = pending.get("requested_qty") or 1.0
+                _add_to_draft([{
+                    "product": resolved_option["name"],
+                    "product_id": resolved_option["product_id"],
+                    "quantity": qty,
+                    "unit": resolved_option["unit"],
+                    "unit_price": resolved_option["unit_price"],
+                }])
+                st.session_state.pending_ambiguous = None
+                data = {
+                    "added_items": [{
+                        "name": resolved_option["name"], "qty": qty,
+                        "unit": resolved_option["unit"],
+                    }],
+                    "draft_total": sum(
+                        d["quantity"] * d["unit_price"] for d in st.session_state.draft_items
+                    ),
+                }
+                reply = generate_reply(user_msg, "order_intent", data, "ur_roman")
+                st.markdown(reply)
+                st.session_state.messages.append({"role": "assistant", "content": reply})
+                _trim_messages()
+                st.rerun()
+
+            # A pending question existed but this message didn't answer
+            # it (e.g. the customer asked something unrelated instead) —
+            # clear it so they don't stay stuck, then parse normally.
+            if pending and not resolved_option:
+                st.session_state.pending_ambiguous = None
+
             parsed = classify_message(user_msg)
             intent = parsed.get("intent", "other")
             language = parsed.get("language", "en")
@@ -238,6 +285,30 @@ if user_msg:
                     and not s.get("exceeds_stock")
                 ]
                 st.session_state.pending_spend_orders = actionable_spend
+
+                # CHANGED (bug fix): remember what we just asked about so
+                # a short follow-up reply can resolve it next turn (see
+                # resolve_ambiguous_followup above). Only tracks the
+                # first ambiguous item — good enough for a hackathon demo
+                # where one disambiguation at a time is the common case.
+                if ambiguous:
+                    first = ambiguous[0]
+                    st.session_state.pending_ambiguous = {
+                        "family": first["family"],
+                        "requested_qty": first.get("requested_qty") or 1.0,
+                        "options": [
+                            {
+                                "product_id": o["id"],
+                                "name": o["name"],
+                                "unit": o["unit"],
+                                "unit_price": float(o["unit_price"]),
+                            }
+                            for o in first["options"]
+                        ],
+                    }
+                else:
+                    st.session_state.pending_ambiguous = None
+
                 data = {
                     "added_items": added_items_payload,
                     "spend_orders": spend_orders,
@@ -277,6 +348,7 @@ if user_msg:
 
             elif intent == "cancel":
                 st.session_state.draft_items = []
+                st.session_state.pending_ambiguous = None
                 st.session_state.pending_spend_orders = []
                 reply = "Cancel kar diya."
 
