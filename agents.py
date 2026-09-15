@@ -124,6 +124,68 @@ ALIAS_HINTS = {
 }
 
 
+def resolve_ambiguous_followup(pending, message):
+    """
+    CHANGED (bug fix): previously, once the bot asked "which size?",
+    that question was immediately forgotten — the next message had to
+    restate the whole product name from scratch, so a natural reply
+    like "5kg wla kardo" (colloquial for "the 5kg one") went completely
+    unrecognized. This tries to match a short follow-up against the
+    specific options that were just offered.
+
+    `pending` is {"family": str, "options": [...product dicts...],
+    "requested_qty": float}. Returns the matched product dict, or None
+    if the follow-up doesn't seem to answer the pending question (in
+    which case the caller should treat it as a fresh, unrelated message
+    instead of getting stuck forever).
+    """
+    msg = message.lower().strip()
+    options = pending.get("options") or []
+    if not options:
+        return None
+
+    # 1. Size+unit in the reply, matched against each option's own SKU size
+    #    e.g. "5kg wla kardo" -> 5kg -> matches "Atta 5kg"
+    m = re.search(
+        r"(\d+(?:\.\d+)?)\s*(kg|kgs|kilo|kilos|g|gram|grams|"
+        r"litre|liter|ltr|l|ml|pcs|pc|piece|pieces|dozen|"
+        r"pack|packet|bag|bottle)",
+        msg,
+    )
+    if m:
+        qty_val = float(m.group(1))
+        norm_unit = _normalize_unit(m.group(2))
+        target_base = "kg" if norm_unit in ("kg", "gram") else (
+            "litre" if norm_unit in ("litre", "ml") else norm_unit
+        )
+        # scale gram/ml inputs into kg/litre to compare against SKU size
+        scale = 0.001 if norm_unit in ("gram", "ml") else 1.0
+        scaled_qty = qty_val * scale
+        for opt in options:
+            size, base_opt = _extract_sku_size(opt["name"])
+            if base_opt == target_base and size is not None and abs(size - scaled_qty) < 0.05:
+                return opt
+            if opt["unit"].lower() == norm_unit:
+                return opt
+
+    # 2. Ordinal / positional words ("first", "second", "pehla", "dusra")
+    ordinals = {
+        "first": 0, "pehla": 0, "pehli": 0, "1st": 0,
+        "second": 1, "dusra": 1, "dusri": 1, "2nd": 1,
+        "third": 2, "teesra": 2, "3rd": 2,
+    }
+    for word, idx in ordinals.items():
+        if word in msg and idx < len(options):
+            return options[idx]
+
+    # 3. The option's own name mentioned directly ("atta 5kg", "5kg bag")
+    for opt in options:
+        if opt["name"].lower() in msg:
+            return opt
+
+    return None
+
+
 def _fmt_num(x):
     try:
         if float(x).is_integer():
@@ -211,19 +273,28 @@ def _resolve_request(fragment, qty, user_unit):
     qty = float(qty) if qty else 1.0
 
     if user_unit_norm:
-        # Same unit as a SKU's own unit (e.g. "dozen eggs" where Eggs is by dozen)
-        for p in matches:
-            if p["unit"].lower() == user_unit_norm:
-                return {"status": "ok", "product": p, "quantity": qty}
-
-        # Divisible units — look for SKU whose name size == qty
+        # CHANGED (bug fix): this SKU-size check now runs FIRST. It used
+        # to run second, after the "same unit as SKU's own unit" check
+        # below — which meant "sugar 5kg" matched "Sugar 1kg" (whose
+        # unit is literally "kg") and returned 5 of THAT at Rs.900,
+        # instead of the actual "Sugar 5kg" bag at Rs.850 that the
+        # customer typed verbatim. A specific size match against a
+        # real SKU name is a more precise, more literal read of what
+        # the customer asked for than the generic "N of the per-unit
+        # SKU" interpretation, so it should win when both are possible.
         if user_unit_norm in DIVISIBLE_UNITS:
             for p in matches:
                 size, base = _extract_sku_size(p["name"])
                 if base == user_unit_norm and size is not None and abs(size - qty) < 0.05:
                     return {"status": "ok", "product": p, "quantity": 1.0}
 
-            # Size hint in SKU name matches qty regardless of unit (e.g. "12 eggs")
+        # Same unit as a SKU's own unit (e.g. "dozen eggs" where Eggs is by dozen)
+        for p in matches:
+            if p["unit"].lower() == user_unit_norm:
+                return {"status": "ok", "product": p, "quantity": qty}
+
+        # Size hint in SKU name matches qty regardless of unit (e.g. "12 eggs")
+        if user_unit_norm in DIVISIBLE_UNITS:
             for p in matches:
                 size, _ = _extract_sku_size(p["name"])
                 if size is not None and abs(size - qty) < 0.05:
@@ -330,6 +401,50 @@ def _local_parse(message: str) -> dict:
                 continue
             seen_families.add(family)
             ambiguous.append(result)
+
+    # CHANGED (bug fix): the block above only catches QUANTITY-FIRST
+    # phrasing ("5kg atta"). Customers very naturally say it the way
+    # it's printed on the shelf/catalog instead — "Sugar 5kg", "Atta
+    # 5kg" — which is PRODUCT-then-SIZE. Without this pass, that input
+    # fell all the way through to the bare-word fallback below, which
+    # only extracts a single word ("sugar") with no size context at
+    # all — so "Sugar 5kg" matched BOTH Sugar SKUs and re-asked the
+    # same "which size?" question even though the size was right there.
+    product_then_qty_pattern = re.compile(
+        r"\b([a-z]{3,})\s+"
+        r"(\d+(?:\.\d+)?)\s*"
+        r"(kg|kgs|kilo|kilos|kilogram|kilograms|"
+        r"gram|grams|g|"
+        r"litre|liter|litres|liters|ltr|l|"
+        r"ml|dozen|piece|pieces|pcs|pc|"
+        r"pack|packet|packs|bag|bags|bottle|bottles)\b",
+        re.IGNORECASE,
+    )
+    if not products and not ambiguous and not spend_orders:
+        for m in product_then_qty_pattern.finditer(msg):
+            word = m.group(1).lower()
+            if word in ("rs", "rupay", "rupees", "pkr"):
+                continue
+            qty = float(m.group(2))
+            unit_raw = m.group(3)
+            result = _resolve_request(word, qty, unit_raw)
+            if result["status"] == "ok":
+                p = result["product"]
+                if any(x["product_id"] == p["id"] for x in products):
+                    continue
+                products.append({
+                    "product": p["name"], "product_id": p["id"],
+                    "quantity": result["quantity"], "unit": p["unit"],
+                    "unit_price": float(p["unit_price"]),
+                    "stock_available": float(p["current_stock"]),
+                    "exceeds_stock": result["quantity"] > float(p["current_stock"]),
+                })
+            elif result["status"] == "ambiguous":
+                family = result["family"].lower()
+                if family in seen_families:
+                    continue
+                seen_families.add(family)
+                ambiguous.append(result)
 
     # Bare product name (no qty)
     if not products and not spend_orders and not ambiguous:
