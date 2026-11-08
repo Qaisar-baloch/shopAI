@@ -10,7 +10,7 @@ from db import (
 )
 from styles import inject_theme, page_header, sidebar_brand, footer
 
-st.set_page_config(page_title="Inventory · DukaanAI", page_icon="📦", layout="wide")
+st.set_page_config(page_title="Inventory · ShopAI", page_icon="📦", layout="wide")
 inject_theme()
 sidebar_brand()
 init_db()
