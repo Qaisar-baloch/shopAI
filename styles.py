@@ -1,5 +1,5 @@
 """
-DukaanAI — Custom theme module (Modern SaaS).
+ShopAI — Custom theme module (Modern SaaS).
 
 Usage in any page:
     from styles import inject_theme, page_header, sidebar_brand, footer
@@ -111,12 +111,12 @@ def inject_theme():
             border-left: 3px solid {BLUE} !important;
         }}
 
-        .dukaanai-brand {{
+        .shopai-brand {{
             padding: 1rem 0.5rem 1.25rem 0.5rem;
             border-bottom: 1px solid #FFFFFF22;
             margin-bottom: 1rem;
         }}
-        .dukaanai-brand .title {{
+        .shopai-brand .title {{
             font-family: 'Space Grotesk', sans-serif;
             font-size: 1.4rem;
             font-weight: 700;
@@ -124,7 +124,7 @@ def inject_theme():
             letter-spacing: -0.02em;
             line-height: 1.1;
         }}
-        .dukaanai-brand .tag {{
+        .shopai-brand .tag {{
             font-size: 0.68rem;
             text-transform: uppercase;
             letter-spacing: 0.14em;
@@ -279,7 +279,7 @@ def inject_theme():
         .badge-low       {{ background: {AMBER}22; color: #B45309; }}
         .badge-out       {{ background: {RED}22;   color: #B91C1C; }}
 
-        .dukaanai-footer {{
+        .shopai-footer {{
             margin-top: 3rem;
             padding-top: 1.5rem;
             border-top: 1px solid {GRAY_BORDER};
@@ -303,8 +303,8 @@ def page_header(title: str, tag: str = "", subtitle: str = ""):
 
 def sidebar_brand():
     st.sidebar.markdown("""
-    <div class="dukaanai-brand">
-        <div class="title">🛒 DukaanAI</div>
+    <div class="shopai-brand">
+        <div class="title">🛒 ShopAI</div>
         <div class="tag">The shop, in sync</div>
     </div>
     """, unsafe_allow_html=True)
@@ -325,8 +325,8 @@ def status_to_badge(status: str) -> str:
 
 def footer():
     st.markdown(
-        '<div class="dukaanai-footer">'
-        'DukaanAI · Autonomous AI Business Agent · MVP for hackathon demonstration'
+        '<div class="shopai-footer">'
+        'ShopAI · Autonomous AI Business Agent · MVP for hackathon demonstration'
         '</div>',
         unsafe_allow_html=True,
     )
