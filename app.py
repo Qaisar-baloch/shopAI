@@ -3,7 +3,7 @@ from db import init_db, get_conn
 from styles import inject_theme, page_header, sidebar_brand, footer
 
 st.set_page_config(
-    page_title="DukaanAI",
+    page_title="ShopAI",
     page_icon="🛒",
     layout="wide",
     initial_sidebar_state="expanded",
