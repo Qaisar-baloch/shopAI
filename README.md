@@ -174,7 +174,7 @@ shopAI/
 
 ## 🌐 Live Demo
 
-Deployed on Streamlit Cloud: *(URL added after deployment)*
+Deployed on Streamlit Cloud: *https://shopai-vhjjzguarpdigbawg8ds2t.streamlit.app/*
 
 ---
 
